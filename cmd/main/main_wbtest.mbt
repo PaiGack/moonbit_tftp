@@ -132,6 +132,18 @@ test "serve defaults are the RFC 1350 ones" {
 }
 
 ///|
+/// The number the CLI prints as the default and the number the library uses
+/// have to be the same one: README, `--help` and `ServerOptions::default()`
+/// all quote it, and when they drifted apart (32 vs 64) nothing caught it.
+test "the CLI's default session ceiling is the library's" {
+  match Command::parse("serve", []) {
+    Ok(Serve(args)) =>
+      assert_eq(args.max_sessions, @lib.ServerOptions::default().max_sessions())
+    _ => fail("expected a serve command")
+  }
+}
+
+///|
 test "serve flags override the defaults" {
   match
     Command::parse("serve", [

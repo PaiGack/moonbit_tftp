@@ -371,15 +371,12 @@ async fn serve(args : ServeArgs) -> Result[Unit, CliError] {
             }
             Err(_) => ()
           }
-        @lib.Dispatch::Rejected(tid) =>
-          // A packet on the request port that is not a request is a client
-          // using the wrong TID; ERROR 5 belongs on that client's own port.
+        @lib.Dispatch::Rejected(tid~, error~) =>
+          // A refused request still gets an answer on the client's own port:
+          // ERROR 5 for a client on the wrong TID, ERROR 4 when the session
+          // ceiling is full. The dispatcher already decided which.
           try {
             let socket = @lib.SocketSession::new(tid, peer)
-            let error = @lib.peer_error(
-              @lib.ErrorCode::UnknownTransferId,
-              "unknown transfer id",
-            )
             socket.send(@lib.encode(@lib.to_error_packet(error)))
             socket.close()
           } catch {

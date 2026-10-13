@@ -50,7 +50,7 @@ moon run cmd/main -- serve --root ./tftpboot --port 6969 --allow-overwrite
 | `--root DIR` | 对外服务的根目录，请求路径被限制在其中 | `.` |
 | `--port N` | 监听的 UDP 端口 | `69` |
 | `--allow-overwrite` | 允许 WRQ 覆盖已存在的文件 | 关闭（仅新建） |
-| `--max-sessions N` | 并发会话上限 | `32` |
+| `--max-sessions N` | 并发会话上限，超出的请求回 ERROR 4 且不建立会话 | `32` |
 
 ### 下载（get）
 

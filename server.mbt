@@ -53,6 +53,9 @@ pub(all) enum ServerError {
   DiskFull(String)
   /// The file a WRQ names is already there (ERROR 6).
   FileAlreadyExists(String)
+  /// A packet arrived on a TID this server has no session for (ERROR 5,
+  /// RFC 1350 section 4).
+  UnknownTransferId(String)
   /// Options could not be agreed on (ERROR 8, RFC 2347 section 3).
   OptionNegotiationFailed(String)
   /// The peer stopped answering (ERROR 0: the RFC defines no other code).
@@ -74,6 +77,7 @@ pub fn ServerError::error_code(self : ServerError) -> ErrorCode {
     DiskFull(_) => ErrorCode::DiskFull
     IllegalOperation(_) => ErrorCode::IllegalOperation
     FileAlreadyExists(_) => ErrorCode::FileAlreadyExists
+    UnknownTransferId(_) => ErrorCode::UnknownTransferId
     OptionNegotiationFailed(_) => ErrorCode::OptionNegotiationFailed
     Timeout => ErrorCode::Undefined
   }
@@ -88,6 +92,7 @@ pub fn ServerError::message(self : ServerError) -> String {
     | DiskFull(message)
     | IllegalOperation(message)
     | FileAlreadyExists(message)
+    | UnknownTransferId(message)
     | OptionNegotiationFailed(message) => message
     Timeout => "timed out"
   }
@@ -141,9 +146,11 @@ pub extend ServerOptions with @moonbitlang/core/debug.Debug::{to_repr}
 
 ///|
 /// The safe defaults: a root of `.`, writes only create, and a session ceiling
-/// that a plain server never reaches but a flood cannot pass.
+/// that a plain server never reaches but a flood cannot pass. The ceiling is
+/// the same `32` the CLI and README document, so there is one number to
+/// remember rather than three that drift.
 pub fn ServerOptions::default() -> ServerOptions {
-  { root: ".", write_policy: CreateOnly, max_sessions: 64, max_retries: 6, }
+  { root: ".", write_policy: CreateOnly, max_sessions: 32, max_retries: 6, }
 }
 
 ///|
@@ -638,6 +645,7 @@ fn from_peer_error(code : ErrorCode, message : String) -> ServerError {
     DiskFull => DiskFull(message)
     IllegalOperation => IllegalOperation(message)
     FileAlreadyExists => FileAlreadyExists(message)
+    UnknownTransferId => UnknownTransferId(message)
     OptionNegotiationFailed => OptionNegotiationFailed(message)
     _ => IllegalOperation("peer error: \{message}")
   }
@@ -881,13 +889,19 @@ fn accepted_write(request : Packet) -> Result[AcceptedOptions, ServerError] {
 pub(all) enum Dispatch {
   /// The datagram started a new session addressed to `tid`.
   Started(String)
-  /// The datagram was an ERROR 5, sent on the requesting TID (RFC 1350,
-  /// section 4).
+  /// The datagram was refused, and `error` says which ERROR packet is owed
+  /// back on `tid`.
   ///
   /// An ERROR is not bound to a TID like the rest of a transfer: the RFC asks
   /// for it to come from a fresh port too, but the packet has to win the race
   /// with the new session, so it is sent here rather than from the session.
-  Rejected(String)
+  ///
+  /// The reason travels with the decision instead of being re-derived by the
+  /// caller, because there are two distinct reasons and the RFC gives each its
+  /// own code: a packet that is not a request is a client on the wrong TID
+  /// (ERROR 5), while a request beyond the session ceiling is a server that is
+  /// momentarily full (ERROR 4).
+  Rejected(tid~ : String, error~ : ServerError)
   /// Neither: a datagram that was not a request at all.
   Ignored
 } derive(Eq, Debug)
@@ -986,6 +1000,11 @@ pub fn[A] Dispatcher::started(self : Dispatcher[A]) -> Int32 {
 /// A request starts a session; a DATA/ACK/ERROR that got here instead of to a
 /// session is a client using the wrong TID, which RFC 1350 section 4 answers
 /// with ERROR 5.
+///
+/// A request that arrives once `max_sessions` are already running is refused
+/// rather than started: the ceiling is the whole point of the field, and a
+/// session that is silently dropped leaves the client retransmitting into the
+/// void. The refusal is an ERROR 4, the RFC's one code for "not right now".
 pub fn[A : TidAllocator] Dispatcher::route(
   self : Dispatcher[A],
   datagram : Datagram,
@@ -994,14 +1013,28 @@ pub fn[A : TidAllocator] Dispatcher::route(
     Err(_) => Ignored
     Ok(packet) =>
       match packet {
-        Rrq(_, _, _) | Wrq(_, _, _) => {
-          self.started = self.started + 1
-          Started(self.allocator.allocate(datagram.peer()))
-        }
+        Rrq(_, _, _) | Wrq(_, _, _) =>
+          if self.started >= self.max_sessions {
+            // Over the ceiling. An answer is still owed on a fresh TID, but
+            // no session is created, so the flood cannot grow the server.
+            Rejected(
+              tid=self.allocator.allocate(datagram.peer()),
+              error=IllegalOperation(
+                "too many concurrent sessions (limit \{self.max_sessions})",
+              ),
+            )
+          } else {
+            self.started = self.started + 1
+            Started(self.allocator.allocate(datagram.peer()))
+          }
         // A DATA / ACK / OACK / ERROR that reached the request port is a
         // client using the wrong TID, whether it is a stale ACK from a session
         // that ended or a stray packet that never had one.
-        _ => Rejected(self.allocator.allocate(datagram.peer()))
+        _ =>
+          Rejected(
+            tid=self.allocator.allocate(datagram.peer()),
+            error=UnknownTransferId("unknown transfer id"),
+          )
       }
   }
 }
