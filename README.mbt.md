@@ -129,17 +129,43 @@ async fn download() -> Unit {
 
 ## 平台支持
 
-TFTP 基于 UDP，需要宿主提供 UDP socket。当前以 `native` 为唯一验证目标：
+TFTP 基于 UDP，需要宿主提供 UDP socket。当前只有 `native` 是可端到端跑通的
+目标，其余后端的编译结果按「包 / 目标」分开看，与 `moon check --target <t>` 一致：
 
-| 后端 | 状态 | 说明 |
+### 根包 `PaiGack/tftp`（协议层 + 状态机 + socket 后端）
+
+报文编解码、选项协商、netascii 与两个状态机都是纯函数或纯状态转移，不依赖
+socket；socket 后端（`server_fs.mbt`、`transport_socket.mbt`）依赖
+`mizchi/x` 的 `socket` / `fs` 实现。
+
+| 目标 | check 结果 | 说明 |
 | --- | --- | --- |
-| `native` | ✅ 支持 | CI 全流程（check / test / build）在 native 上跑 |
-| `js` | ⚠️ 未验证 | 依赖宿主提供 UDP；协议层与状态机可编译，socket 后端未验证 |
-| `wasm` / `wasm-gc` | ⚠️ 未验证 | 同上，视运行时 socket 能力而定 |
+| `native` | ✅ 通过 | CI 全流程（check / test / build）在 native 上跑 |
+| `js` | ✅ 通过 | 依赖 `mizchi/x` 在 js 上提供的 socket / fs 替身，可编译；未做端到端验证 |
+| `wasm` | ✅ 通过 | 同上 |
+| `wasm-gc` | ❌ 编译失败 | `mizchi/x` 的 `socket` 替身在 wasm-gc 上缺少 `.addr` 字段 |
 
-协议层（报文编解码、选项协商、netascii）与两个状态机都是纯函数或纯状态转移，
-不依赖 socket，因此在任意后端都可测试；`native` 之外缺的只是 socket 后端与
-CLI 的端到端验证。
+`wasm-gc` 的失败点（均为 `The type ... has no field 'addr'`，error 4091）：
+
+- `server_fs.mbt:141`、`server_fs.mbt:175` —— `UdpClient.addr`
+- `transport_socket.mbt:38` —— `UdpServer.addr`
+- 对应 `server_fs_wbtest.mbt`、`transport_socket_wbtest.mbt` 中的同类调用
+
+### CLI `cmd/main`
+
+CLI 是 `executable`，用 `extern "C" fn exit` 退出进程，非 native 后端不支持
+`extern "C"`。
+
+| 目标 | check 结果 | 说明 |
+| --- | --- | --- |
+| `native` | ✅ 通过 | `scripts/cli_demo.sh` 在真实 UDP 套接字上跑通 |
+| `js` | ❌ 编译失败 | `cmd/main/main.mbt:53` 的 `extern "C" fn exit`（error 4156） |
+| `wasm` | ❌ 编译失败 | 同上 |
+| `wasm-gc` | ❌ 编译失败 | `extern "C" fn exit`，并叠加根包在 wasm-gc 上的 `.addr` 报错 |
+
+> 结论：`moon check` 的失败源在「CLI 的 `extern "C"`（js / wasm）」与
+> 「`mizchi/x` socket 在 wasm-gc 上缺 `.addr`（根包 + CLI）」两处，
+> 与协议层本身无关。除 `native` 外都还没做端到端验证。
 
 ## 文档
 
