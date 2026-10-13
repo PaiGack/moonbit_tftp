@@ -1,5 +1,10 @@
-// import {
-//   "PaiGack/tftp" @lib,
-// }
+import {
+  "PaiGack/tftp" @lib,
+  "moonbitlang/core/env",
+  "moonbitlang/core/encoding/utf8",
+  "moonbitlang/async",
+  "mizchi/x/fs",
+  "mizchi/x/socket",
+}
 
 pkgtype(kind: "executable")

@@ -415,10 +415,25 @@ pub struct SocketSession {
   tid : String
 }
 pub fn SocketSession::close(Self) -> Unit
+pub fn SocketSession::local_peer(Self) -> String
 pub async fn SocketSession::new(String, String) -> Self
 pub async fn SocketSession::recv(Self, Int) -> Recv
 pub async fn SocketSession::send(Self, Bytes) -> Unit
 pub fn SocketSession::tid(Self) -> String
+pub impl Transport for SocketSession
+
+pub struct SocketTransport {
+  socket : @socket.UdpServer
+  request_peer : String
+  mut peer : String
+  address : String
+}
+pub fn SocketTransport::close(Self) -> Unit
+pub fn SocketTransport::local_peer(Self) -> String
+pub async fn SocketTransport::new(String) -> Self
+pub async fn SocketTransport::recv(Self, String, Int) -> Recv
+pub async fn SocketTransport::send(Self, Bytes, String) -> Unit
+pub impl Transport for SocketTransport
 
 pub struct TftpOption {
   name : String

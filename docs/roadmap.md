@@ -39,13 +39,19 @@
 - [x] 错误码语义（文件不存在 1 / 访问违规 2 / 磁盘满 3 / 非法操作 4 /
       已存在 6 / 协商失败 8 / 超时 0）
 
-## M5 CLI 与收尾
+## M5 CLI 与收尾（已完成）
 
-- [ ] `cmd/main`：`get` / `put` / `serve` 子命令
-- [ ] 端到端示例与 README 补全
-- [ ] 覆盖率检查与边界用例补齐
+- [x] `cmd/main`：`get` / `put` / `serve` 子命令
+- [x] 真实 UDP 套接字上的客户端传输（`transport_socket.mbt`），并让服务端
+      会话传输实现 `Transport`（`server_fs.mbt`），使 CLI 复用库的状态机
+- [x] 端到端示例与 README 补全（用法、平台支持矩阵）
+- [x] 覆盖率检查与边界用例补齐（`moon coverage analyze`）
+- [x] 与 curl 的互操作对拍，并据此修复两个真实对端才暴露的问题
+      （见 `docs/interop.md`）
+- [x] roadmap 里 M0~M5 的勾选框回填
 
 ## 待定
 
 - DHCP / BOOTP 组合（作为「网络引导工具链」的可选扩展）
+- 与 tftp-hpa / atftp 的对拍（环境暂无这两个程序）
 - 平台支持矩阵细化（native 为主，js / wasm 视 socket 能力而定）

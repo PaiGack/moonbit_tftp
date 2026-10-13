@@ -10,9 +10,11 @@ PaiGack/tftp
 ├── options.mbt              公开 API（RFC 2347 选项协商、OACK、拒绝路径）
 ├── transport.mbt            公开 API（UDP 收发抽象 Transport、Datagram、Recv）
 ├── transport_memory.mbt     公开 API（内存实现，离线测试用）
+├── transport_socket.mbt     公开 API（客户端真实 UDP 套接字实现）
 ├── client.mbt               公开 API（get / put 停等状态机）
 ├── server.mbt               公开 API（请求处理 / 会话状态机 / TID 分发 / 路径约束）
-├── server_fs.mbt            公开 API（真实文件系统后端 + socket 会话传输）
+├── server_fs.mbt            公开 API（真实文件系统后端 + socket 会话传输，
+                               并让它实现 Transport 以便 CLI 驱动会话）
 ├── server_memory.mbt        公开 API（内存文件系统，离线测试用）
 ├── block.mbt                公开 API（block 号 u16 回绕比较）
 ├── netascii.mbt             公开 API（netascii 转换，含跨块行尾）
