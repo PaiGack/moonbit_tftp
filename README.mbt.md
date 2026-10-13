@@ -11,8 +11,8 @@ TFTP（Trivial File Transfer Protocol，简单文件传输协议）的纯 MoonBi
 
 做成一个「协议库 + 客户端 + 服务端」的完整实现，两端共享报文编解码层：
 
-- **报文层**：RRQ / WRQ / DATA / ACK / ERROR 的编解码，通道模式（netascii / octet），
-  block 号 u16 回绕处理。
+- **报文层**：RRQ / WRQ / DATA / ACK / ERROR / OACK 的编解码（`encode` / `decode`），
+  通道模式（netascii / octet），畸形报文以 `DecodeError` 返回，block 号 u16 回绕。
 - **客户端**：`get` / `put`，超时重传、重复包去重（Sorcerer's Apprentice 问题修复）、
   blksize / timeout / tsize 选项协商。
 - **服务端**：69 端口监听、每请求独立 TID 会话、并发会话管理、
@@ -21,8 +21,9 @@ TFTP（Trivial File Transfer Protocol，简单文件传输协议）的纯 MoonBi
 
 ## 当前状态
 
-仓库刚初始化，已发布报文层的最小骨架（opcode 与常量），
-客户端 / 服务端在后续提交中逐步落地。详见 [docs/roadmap.md](docs/roadmap.md)。
+报文层已落地：六种报文的编解码、通道模式枚举、错误码枚举与畸形报文处理，
+纯函数、无 socket 依赖，可离线测试。客户端 / 服务端在后续提交中逐步落地。
+详见 [docs/roadmap.md](docs/roadmap.md)。
 
 ## 使用
 

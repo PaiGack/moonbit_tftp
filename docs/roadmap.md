@@ -11,9 +11,10 @@
 
 ## M1 报文层
 
-- [ ] 报文字节编解码：RRQ / WRQ / DATA / ACK / ERROR / OACK
-- [ ] 往返测试 + 畸形报文（截断、非法 opcode、超长字段）处理
-- [ ] 通道模式枚举：netascii / octet / mail（mail 可只留接口）
+- [x] 报文字节编解码：RRQ / WRQ / DATA / ACK / ERROR / OACK（`encode` / `decode`）
+- [x] 往返测试 + 畸形报文（截断、非法 opcode、超长字段、缺 `\0`）处理
+- [x] 通道模式枚举：netascii / octet（mail 只留枚举值，`decode` 拒绝）
+- [x] 选项 `Option\0Value\0` 拆分（取值校验留给 M2）
 
 ## M2 选项协商
 
