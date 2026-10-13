@@ -142,3 +142,37 @@ pub async fn SocketSession::recv(
     None => Recv::Timeout
   }
 }
+
+///|
+pub extend SocketSession with Transport::{local_peer}
+
+///|
+/// A `SocketSession` is also a `Transport`: the peer is fixed at construction,
+/// so the peer argument of `send` / `recv` is redundant but ignored. This is
+/// what lets the session state machines above run unchanged on a real socket.
+///
+/// The bodies reach for the socket directly rather than calling `self.send` /
+/// `self.recv`, which name the *inherent* single-argument helpers and would
+/// not compile here.
+pub impl Transport for SocketSession with fn local_peer(self) {
+  self.tid
+}
+
+///|
+pub impl Transport for SocketSession with fn send(self, payload, _peer) {
+  self.socket.send(payload)
+}
+
+///|
+pub impl Transport for SocketSession with fn recv(self, _peer, timeout_ms) {
+  let buffer = FixedArray::make(65536, b'\x00')
+  match
+    @async.with_timeout_opt(timeout_ms, () => {
+      let length = self.socket.recv(buffer)
+      buffer.unsafe_reinterpret_as_bytes()[:length].to_owned()
+    }) {
+    Some(payload) =>
+      Recv::Packet(Datagram::new(payload, self.socket.addr.to_string()))
+    None => Recv::Timeout
+  }
+}

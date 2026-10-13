@@ -596,8 +596,10 @@ pub async fn[T : Transport] serve_write(
               expected = expected + 1
               packet = Ack(block)
               if chunk.length() < block_size {
-                // The peer sent a short block: that was the file, and our ACK
-                // is already on its way before we hand it back.
+                // The peer sent a short block: that was the file. Its ACK is
+                // owed before we return, otherwise a client that is waiting on
+                // it retransmits into a session that has already gone.
+                transport.send(encode(Ack(block)), peer)
                 return Ok(out)
               }
             } else if block_before(block, expected) {

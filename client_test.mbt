@@ -1268,3 +1268,127 @@ async test "put retransmits after its ACK is lost" {
     }
   })
 }
+
+///|
+/// A read server that follows RFC 2347 to the letter: it sends the OACK and
+/// then *waits for ACK 0* before the first DATA, like this module's own
+/// `serve_read` does.
+///
+/// The lenient double above answers an OACK straight with DATA 1, so it never
+/// catches a client that forgets the ACK 0; this one hangs if that happens,
+/// which is the whole point of writing it out separately.
+async fn serve_read_strict(
+  server : @tftp.MemoryTransport,
+  blocks : Array[Bytes],
+  block_size : Int32,
+) -> Unit {
+  ignore(server.recv("client:0", 1000))
+  server.send(
+    @tftp.encode(
+      @tftp.Packet::Oack([
+        @tftp.TftpOption::new("blksize", block_size.to_string()),
+      ]),
+    ),
+    "client:0",
+  )
+  // The client's ACK 0 is what licenses the data; anything else means it
+  // never answered the OACK.
+  match server.recv("client:0", 1000) {
+    @tftp.Recv::Packet(datagram) =>
+      match @tftp.decode(datagram.payload()) {
+        Ok(@tftp.Packet::Ack(0)) => ()
+        _ => fail("expected ACK 0 after the OACK")
+      }
+    @tftp.Recv::Timeout => fail("no ACK 0 after the OACK")
+  }
+  let mut i = 0
+  while i < blocks.length() {
+    server.send(
+      @tftp.encode(@tftp.Packet::Data((i + 1).to_uint16(), blocks[i])),
+      "client:0",
+    )
+    ignore(server.recv("client:0", 1000))
+    i = i + 1
+  }
+}
+
+///|
+async test "get acknowledges an OACK before the data arrives" {
+  let (client, server) = @tftp.MemoryTransport::pair("client:0", "server:69")
+  let payload = b"negotiated"
+  @async.with_task_group(group => {
+    group.spawn_bg(() => serve_read_strict(server, [payload], 1024))
+    let result = @tftp.get(
+      client,
+      "server:69",
+      "greeting.txt",
+      @tftp.ClientOptions::default().with_block_size(1024),
+    )
+    match result {
+      Ok(outcome) =>
+        match outcome.received() {
+          Some(bytes) => assert_true(bytes == payload)
+          None => fail("expected received bytes")
+        }
+      Err(_) => fail("get failed")
+    }
+  })
+}
+
+///|
+/// A write client that waits for every ACK, the last one included.
+///
+/// A server that returns without acknowledging the short block leaves this
+/// hanging, which is exactly the bug worth pinning down.
+async fn put_expecting_final_ack(
+  client : @tftp.MemoryTransport,
+  payload : Bytes,
+  block_size : Int32,
+) -> Int32 {
+  let result = @tftp.put(
+    client,
+    "server:69",
+    "out.bin",
+    payload,
+    @tftp.ClientOptions::default().with_block_size(block_size).with_timeout(1),
+  )
+  match result {
+    Ok(outcome) =>
+      match outcome.sent() {
+        Some(bytes) => bytes
+        None => fail("expected a byte count")
+      }
+    Err(_) => fail("put never got its last ACK")
+  }
+}
+
+///|
+async test "the last block of a write is acknowledged" {
+  let (client, server) = @tftp.MemoryTransport::pair("client:0", "server:69")
+  // Two blocks: a full one and a short one, so the short block ends the file.
+  let payload : Bytes = Bytes::make(600, b'z')
+  @async.with_task_group(group => {
+    group.spawn_bg(() => {
+      let files = @tftp.MemoryFileSystem::new()
+      let options = @tftp.ServerOptions::default().with_root("/")
+      let session = @tftp.TransferSession::new(
+        server, files, "client:0", options,
+      )
+      let request = server.recv("client:0", 1000)
+      match request {
+        @tftp.Recv::Packet(datagram) =>
+          match @tftp.decode(datagram.payload()) {
+            Ok(packet) => {
+              let outcome = session.serve(packet)
+              // The bytes must have landed, and the session must report them.
+              assert_eq(outcome.bytes(), 600)
+            }
+            Err(_) => fail("bad request")
+          }
+        @tftp.Recv::Timeout => fail("no request")
+      }
+    })
+    let sent = put_expecting_final_ack(client, payload, 512)
+    assert_eq(sent, 600)
+  })
+}

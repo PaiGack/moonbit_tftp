@@ -285,6 +285,11 @@ pub async fn[T : Transport] get(
     Err(error) => return Err(error)
   }
   let session = handshake.session
+  // An OACK is not DATA: it restarts the count, and the client owes an ACK 0
+  // before the server will send block 1 (RFC 2347, section 4).
+  if handshake.oack_pending {
+    transport.send(encode(Packet::Ack(0)), remote)
+  }
   // The first DATA a server sends is block 1.
   let mut expected : UInt16 = 1
   let mut retries = 0
@@ -430,6 +435,10 @@ pub async fn[T : Transport] put(
 priv struct Handshake {
   session : Session
   first_data : (UInt16, Bytes)?
+  /// Whether the handshake was an OACK that still needs its ACK 0. RFC 2347
+  /// section 4: the client acknowledges an OACK with ACK 0, and only then does
+  /// the server start sending DATA.
+  oack_pending : Bool
 }
 
 ///|
@@ -463,6 +472,7 @@ async fn[T : Transport] await_options(
                 return Ok({
                   session: Session::from_oack(request, packet),
                   first_data: None,
+                  oack_pending: true,
                 })
               // No OACK: the peer ignored the options and went straight to
               // RFC 1350, so the request's own values stand.
@@ -470,6 +480,7 @@ async fn[T : Transport] await_options(
                 return Ok({
                   session: Session::plain(request),
                   first_data: Some((block, payload)),
+                  oack_pending: false,
                 })
               _ => retries = retries + 1
             }
