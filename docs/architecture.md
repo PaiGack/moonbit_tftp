@@ -6,7 +6,7 @@
 PaiGack/tftp
 ├── moon.mod                 模块元数据（名称 / 版本 / 仓库 / 许可证）
 ├── moon.pkg                 根包：协议报文层
-├── tftp.mbt                 公开 API（opcode、常量）
+├── tftp.mbt                 公开 API（报文编解码、opcode / 模式 / 错误码枚举）
 ├── tftp_test.mbt            黑盒测试（只看公开 API）
 ├── tftp_wbtest.mbt          白盒测试（可访问内部实现）
 ├── cmd/main/                CLI 可执行入口
