@@ -83,21 +83,17 @@ test "a line ending split across blocks survives the encode" {
 
 ///|
 test "a line ending split across blocks survives the decode" {
-  // A CR at the end of block one and its LF at the start of block two arrive
-  // as "tail\r" + "\nhead". The decoder cannot emit the CR when it sees it —
-  // the LF may still be coming — so it holds it and the next block decides.
-  let (state, decoded_first) = @tftp.netascii_decode(
-    @tftp.Clean,
-    bytes_from("tail\r"),
-  )
+  // Block one ends on the `\r`, block two opens on the `\n`: the decoder holds
+  // the CR, and the next block's LF resolves it into one newline.
+  let first = bytes_from("tail\r")
+  let second = bytes_from("\nhead")
+  let (state, decoded_first) = @tftp.netascii_decode(@tftp.Clean, first)
   assert_eq(state, @tftp.LocalCr)
+  // The CR is held back, not emitted: it may still turn out to be a CRLF.
   assert_eq(text_from(decoded_first), "tail")
-  let (state2, decoded_second) = @tftp.netascii_decode(
-    state,
-    bytes_from("\nhead"),
-  )
+  let (state2, decoded_second) = @tftp.netascii_decode(state, second)
   assert_eq(state2, @tftp.Clean)
-  // The held CR is resolved by the LF: one newline, no stray carriage return.
+  assert_eq(text_from(decoded_second), "\nhead")
   assert_eq(text_from(decoded_first + decoded_second), "tail\nhead")
 }
 
@@ -139,13 +135,23 @@ test "every split point of a CRLF recovers the same line ending" {
       @tftp.Clean,
       wire.clamped_view(end=split).to_owned(),
     )
-    let (_, second) = @tftp.netascii_decode(
+    let (state2, second) = @tftp.netascii_decode(
       state,
       wire.clamped_view(start=split).to_owned(),
     )
-    // The decoder holds at most one CR, so a two-block split is exact.
+    // The decoder holds at most one CR, so a two-block split is exact, and
+    // the finish call is the identity here because nothing is left pending.
+    assert_eq(state2, @tftp.Clean)
     assert_eq(text_from(first + second), text_from(whole))
+    assert_eq(@tftp.netascii_decode_finish(state2, first + second), whole)
   }
+}
+
+///|
+test "decode_finish is the identity when nothing is held" {
+  let (state, body) = @tftp.netascii_decode(@tftp.Clean, bytes_from("done"))
+  assert_eq(state, @tftp.Clean)
+  assert_eq(text_from(@tftp.netascii_decode_finish(state, body)), "done")
 }
 
 ///|
@@ -160,7 +166,13 @@ test "a final carriage return is completed at the end of the stream" {
 }
 
 ///|
-test "a trailing carriage return on the wire decodes to a lone cr" {
+test "a trailing carriage return on the wire is held until finish" {
+  // The CR is the last byte of the block, so it is held back; only the finish
+  // call, seeing no partner follow, emits it as a lone CR.
+  let (state, body) = @tftp.netascii_decode(@tftp.Clean, bytes_from("done\r"))
+  assert_eq(state, @tftp.LocalCr)
+  assert_eq(text_from(body), "done")
+  assert_eq(text_from(@tftp.netascii_decode_finish(state, body)), "done\r")
   // Rebuilt through the stream close, since the decoder holds the CR back.
   assert_eq(
     text_from(@tftp.netascii_decode_all(bytes_from("done\r"))),

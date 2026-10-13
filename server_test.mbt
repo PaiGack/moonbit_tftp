@@ -685,6 +685,91 @@ test "a dispatcher hands every request its own TID" {
 }
 
 ///|
+test "a dispatcher starts exactly max_sessions sessions and then refuses" {
+  // The ceiling is the field the whole `Dispatcher` carries, so it has to be
+  // the thing that ends the run: with a limit of 2, the third request is
+  // answered with ERROR 4 instead of quietly opening a third session.
+  let dispatcher = @tftp.Dispatcher::new(@tftp.CounterTid::new(30000), 2)
+  let request = @tftp.encode(@tftp.Packet::Rrq("a.txt", @tftp.Octet, []))
+  for i = 0; i < 2; i = i + 1 {
+    match dispatcher.route(@tftp.Datagram::new(request, "10.0.0.\{i}:1000")) {
+      @tftp.Started(_) => ()
+      other => fail("expected session \{i}, got \{tid_repr(other)}")
+    }
+  }
+  assert_eq(dispatcher.started(), 2)
+  match dispatcher.route(@tftp.Datagram::new(request, "10.0.0.9:1000")) {
+    @tftp.Rejected(tid~, error~) => {
+      assert_eq(tid, "10.0.0.9:30002")
+      // ERROR 4, not ERROR 5: the client is on the right TID, the server is
+      // just full. A wrong code here would send the client chasing a port
+      // problem that does not exist.
+      assert_eq(error.error_code(), @tftp.IllegalOperation)
+      assert_eq(
+        error,
+        @tftp.ServerError::IllegalOperation(
+          "too many concurrent sessions (limit 2)",
+        ),
+      )
+    }
+    other => fail("expected a refusal, got \{tid_repr(other)}")
+  }
+  // A refused request must not creep the session count: otherwise the refusal
+  // itself is what grows the server.
+  assert_eq(dispatcher.started(), 2)
+}
+
+///|
+test "a full dispatcher leaves running sessions alone" {
+  // The refusal is scoped to the new request. Whatever is already running
+  // keeps its TID, which is the property a naive "reset the counter" fix
+  // would quietly break.
+  let dispatcher = @tftp.Dispatcher::new(@tftp.CounterTid::new(31000), 1)
+  let first = dispatcher.route(
+    @tftp.Datagram::new(
+      @tftp.encode(@tftp.Packet::Rrq("a.txt", @tftp.Octet, [])),
+      "10.0.0.1:1000",
+    ),
+  )
+  let running = match first {
+    @tftp.Started(tid) => tid
+    other => fail("expected a session, got \{tid_repr(other)}")
+  }
+  ignore(
+    dispatcher.route(
+      @tftp.Datagram::new(
+        @tftp.encode(@tftp.Packet::Wrq("b.txt", @tftp.Octet, [])),
+        "10.0.0.2:1000",
+      ),
+    ),
+  )
+  // The first session's TID is still valid, and the counter did not advance
+  // past it.
+  assert_eq(running, "10.0.0.1:31000")
+  assert_eq(dispatcher.started(), 1)
+}
+
+///|
+test "a ceiling of zero refuses even the first request" {
+  // A degenerate limit is still a limit: zero sessions means zero, not "one".
+  let dispatcher = @tftp.Dispatcher::new(@tftp.CounterTid::new(32000), 0)
+  match
+    dispatcher.route(
+      @tftp.Datagram::new(
+        @tftp.encode(@tftp.Packet::Rrq("a.txt", @tftp.Octet, [])),
+        "10.0.0.1:1000",
+      ),
+    ) {
+    @tftp.Rejected(tid~, error~) => {
+      assert_eq(tid, "10.0.0.1:32000")
+      assert_eq(error.error_code(), @tftp.IllegalOperation)
+    }
+    other => fail("expected a refusal, got \{tid_repr(other)}")
+  }
+  assert_eq(dispatcher.started(), 0)
+}
+
+///|
 /// Renders a dispatch decision for a failure message.
 fn tid_repr(dispatch : @tftp.Dispatch) -> String {
   dispatch.to_repr().to_string()
@@ -700,7 +785,10 @@ test "a dispatcher answers a stray ACK with ERROR 5" {
   )
   assert_eq(dispatcher.started(), 0)
   match decision {
-    @tftp.Rejected(tid) => assert_eq(tid, "10.0.0.9:50000")
+    @tftp.Rejected(tid~, error~) => {
+      assert_eq(tid, "10.0.0.9:50000")
+      assert_eq(error.error_code(), @tftp.UnknownTransferId)
+    }
     other => fail("expected a rejection, got \{tid_repr(other)}")
   }
 }
@@ -719,7 +807,7 @@ test "a dispatcher ignores a datagram it cannot decode" {
 
 ///|
 test "a dispatcher refuses a request once the ceiling is reached" {
-  // The ceiling bounds concurrent sessions. The first request starts one; the
+  // The ceiling bounds *concurrent* sessions. The first request starts one; the
   // second, with the ceiling already taken, is refused rather than started.
   let dispatcher = @tftp.Dispatcher::new(@tftp.CounterTid::new(45000), 1)
   let first = dispatcher.route(
@@ -739,10 +827,22 @@ test "a dispatcher refuses a request once the ceiling is reached" {
     ),
   )
   match second {
-    @tftp.Busy(tid) => assert_eq(tid, "10.0.0.2:45001")
+    @tftp.Rejected(tid~, error~) => {
+      assert_eq(tid, "10.0.0.2:45001")
+      // ERROR 4, not ERROR 5: the client is on the right TID, the server is
+      // just full. The refusal carries the reason instead of the caller
+      // re-deriving it from the packet.
+      assert_eq(error.error_code(), @tftp.IllegalOperation)
+      assert_eq(
+        error,
+        @tftp.ServerError::IllegalOperation(
+          "too many concurrent sessions (limit 1)",
+        ),
+      )
+    }
     other => fail("expected a refusal, got \{tid_repr(other)}")
   }
-  // A refused request did not start a session.
+  // A refused request did not start a session, and the running one is intact.
   assert_eq(dispatcher.started(), 1)
   assert_eq(dispatcher.active(), 1)
 }
@@ -995,7 +1095,10 @@ test "a dispatcher rejects a stray DATA" {
     ),
   )
   match decision {
-    @tftp.Rejected(tid) => assert_eq(tid, "10.0.0.7:60000")
+    @tftp.Rejected(tid~, error~) => {
+      assert_eq(tid, "10.0.0.7:60000")
+      assert_eq(error.error_code(), @tftp.UnknownTransferId)
+    }
     other => fail("expected a rejection, got \{tid_repr(other)}")
   }
 }
@@ -1746,6 +1849,7 @@ test "from_peer_error keeps the peer's code" {
     (@tftp.DiskFull, @tftp.ServerError::DiskFull("m")),
     (@tftp.IllegalOperation, @tftp.ServerError::IllegalOperation("m")),
     (@tftp.FileAlreadyExists, @tftp.ServerError::FileAlreadyExists("m")),
+    (@tftp.UnknownTransferId, @tftp.ServerError::UnknownTransferId("m")),
     (
       @tftp.OptionNegotiationFailed,
       @tftp.ServerError::OptionNegotiationFailed("m"),
@@ -1799,15 +1903,42 @@ async test "an out-of-range answer is refused with its value spelled out" {
     Ok(requested) => requested
     Err(_) => fail("the request should parse")
   }
+  // The only way a `tsize` answer is out of range is arithmetic overflow: an
+  // ordinary 100 MB file negotiates just fine (see the case below).
   assert_eq(
-    @tftp.resolve_options(requested, fn(_option) { Ok(Some("99999999")) }),
-    Err(@tftp.BadTsize("99999999")),
+    @tftp.resolve_options(requested, fn(_option) { Ok(Some("2147483648")) }),
+    Err(@tftp.BadTsize("2147483648")),
   )
   // A session that goes down this path answers with ERROR 8 and stops, which
   // is what a client sees when the server cannot announce what it will send.
   assert_eq(
-    @tftp.ServerError::OptionNegotiationFailed("tsize=99999999").to_packet(),
-    @tftp.Packet::Error(@tftp.OptionNegotiationFailed, "tsize=99999999"),
+    @tftp.ServerError::OptionNegotiationFailed("tsize=2147483648").to_packet(),
+    @tftp.Packet::Error(@tftp.OptionNegotiationFailed, "tsize=2147483648"),
+  )
+}
+
+///|
+/// A large file is not a bad option: the `tsize` a server announces is the
+/// file size, so a value past `max_block_size` has to reach the OACK.
+async test "a large file announces its tsize instead of failing" {
+  let files = @tftp.MemoryFileSystem::new()
+  files.put("/srv/big.bin", Bytes::make(1, b'x'))
+  let request = @tftp.Packet::Rrq("big.bin", @tftp.Octet, [
+    @tftp.TftpOption::new("tsize", "0"),
+  ])
+  let requested = match @tftp.parse_options(request) {
+    Ok(requested) => requested
+    Err(_) => fail("the request should parse")
+  }
+  let options = match
+    @tftp.resolve_options(requested, fn(_option) { Ok(Some("104857600")) }) {
+    Ok(options) => options
+    Err(_) => fail("a 100 MB size is not out of range")
+  }
+  assert_eq(options.tsize(), Some(104857600))
+  assert_eq(
+    options.oack_packet(),
+    Some(@tftp.Packet::Oack([@tftp.TftpOption::new("tsize", "104857600")])),
   )
 }
 

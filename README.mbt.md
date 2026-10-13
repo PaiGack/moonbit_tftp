@@ -50,7 +50,7 @@ moon run cmd/main -- serve --root ./tftpboot --port 6969 --allow-overwrite
 | `--root DIR` | 对外服务的根目录，请求路径被限制在其中 | `.` |
 | `--port N` | 监听的 UDP 端口 | `69` |
 | `--allow-overwrite` | 允许 WRQ 覆盖已存在的文件 | 关闭（仅新建） |
-| `--max-sessions N` | 并发会话上限 | `32` |
+| `--max-sessions N` | 并发会话上限，超出的请求回 ERROR 4 且不建立会话 | `32` |
 
 ### 下载（get）
 
@@ -142,28 +142,43 @@ async fn download() -> Unit {
 
 ## 平台支持
 
-TFTP 基于 UDP，需要宿主提供 UDP socket。当前以 `native` 为唯一验证目标。
-注意：**整个模块**在非 native 目标上编译不过，不是「能编译、只是没验证」——
-按包拆开看是这样：
+TFTP 基于 UDP，需要宿主提供 UDP socket。当前只有 `native` 是可端到端跑通的
+目标，其余后端的编译结果按「包 / 目标」分开看，与 `moon check --target <t>` 一致：
 
-| 目标 | 根包（协议层 + 状态机） | socket 后端 + CLI |
+### 根包 `PaiGack/tftp`（协议层 + 状态机 + socket 后端）
+
+报文编解码、选项协商、netascii 与两个状态机都是纯函数或纯状态转移，不依赖
+socket；socket 后端（`server_fs.mbt`、`transport_socket.mbt`）依赖
+`mizchi/x` 的 `socket` / `fs` 实现。
+
+| 目标 | check 结果 | 说明 |
 | --- | --- | --- |
-| `native` | ✅ 支持（CI 全流程） | ✅ 支持（CI 全流程） |
-| `js` | ✅ 可编译 | ❌ 编译失败 |
-| `wasm` | ✅ 可编译 | ❌ 编译失败 |
-| `wasm-gc` | ✅ 可编译 | ❌ 编译失败 |
+| `native` | ✅ 通过 | CI 全流程（check / test / build）在 native 上跑 |
+| `js` | ✅ 通过 | 依赖 `mizchi/x` 在 js 上提供的 socket / fs 替身，可编译；未做端到端验证 |
+| `wasm` | ✅ 通过 | 同上 |
+| `wasm-gc` | ❌ 编译失败 | `mizchi/x` 的 `socket` 替身在 wasm-gc 上缺少 `.addr` 字段 |
 
-非 native 目标失败的来源是具体的：
+`wasm-gc` 的失败点（均为 `The type ... has no field 'addr'`，error 4091）：
 
-- `cmd/main/main.mbt` 的 `extern "C" fn exit`：`js` / `wasm` / `wasm-gc` 都没有
-  C 运行时，这一处直接编译失败，**整个 `cmd/main` 因此在非 native 目标上不可用**。
-- `server_fs.mbt` 的 `@fs.read_file` / `@fs.write_file`，以及
-  `transport_socket.mbt`（含 `transport_socket_wbtest.mbt`）用到的
-  `socket.addr` 字段：`wasm-gc` 后端缺这些能力，另报 5 个错。
+- `server_fs.mbt:141`、`server_fs.mbt:175` —— `UdpClient.addr`
+- `transport_socket.mbt:38` —— `UdpServer.addr`
+- 对应 `server_fs_wbtest.mbt`、`transport_socket_wbtest.mbt` 中的同类调用
 
-好在协议层（报文编解码、选项协商、netascii）与两个状态机都是纯函数或纯状态
-转移，不依赖 socket，所以根包在任意后端都能 `moon check` / `moon test` 通过。
-缺 socket 后端与 CLI 端到端验证的只有非 native 目标上的 `cmd/main`。
+### CLI `cmd/main`
+
+CLI 是 `executable`，用 `extern "C" fn exit` 退出进程，非 native 后端不支持
+`extern "C"`。
+
+| 目标 | check 结果 | 说明 |
+| --- | --- | --- |
+| `native` | ✅ 通过 | `scripts/ci.sh` 的 CLI 演示在真实 UDP 套接字上跑通 |
+| `js` | ❌ 编译失败 | `cmd/main/main.mbt:53` 的 `extern "C" fn exit`（error 4156） |
+| `wasm` | ❌ 编译失败 | 同上 |
+| `wasm-gc` | ❌ 编译失败 | `extern "C" fn exit`，并叠加根包在 wasm-gc 上的 `.addr` 报错 |
+
+> 结论：`moon check` 的失败源在「CLI 的 `extern "C"`（js / wasm）」与
+> 「`mizchi/x` socket 在 wasm-gc 上缺 `.addr`（根包 + CLI）」两处，
+> 与协议层本身无关。除 `native` 外都还没做端到端验证。
 
 ## 文档
 

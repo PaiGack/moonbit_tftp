@@ -11,6 +11,7 @@ PaiGack/tftp
 ├── transport.mbt            公开 API（UDP 收发抽象 Transport、Datagram、Recv）
 ├── transport_memory.mbt     公开 API（内存实现，离线测试用）
 ├── transport_socket.mbt     公开 API（客户端真实 UDP 套接字实现）
+├── transport_socket_wbtest.mbt  白盒测试（真实 UDP 套接字实现）
 ├── client.mbt               公开 API（get / put 停等状态机）
 ├── server.mbt               公开 API（请求处理 / 会话状态机 / TID 分发 / 路径约束）
 ├── server_fs.mbt            公开 API（真实文件系统后端 + socket 会话传输，
@@ -28,8 +29,8 @@ PaiGack/tftp
 ├── server_fs_wbtest.mbt     白盒测试（真实文件系统 + socket 会话）
 ├── transport_socket_wbtest.mbt  白盒测试（真实 UDP 套接字客户端传输）
 ├── cmd/main/                CLI 可执行入口
-│   ├── main.mbt             get / put / serve 子命令
-│   └── main_wbtest.mbt      白盒测试（CLI 参数解析）
+│   ├── main.mbt            get / put / serve 子命令实现
+│   └── main_wbtest.mbt     白盒测试（CLI 子命令 / 参数解析）
 └── docs/                    设计文档
 ```
 
@@ -96,3 +97,4 @@ UDP 收发基于社区 socket 抽象 `mizchi/x/socket`（底层为 `moonbitlang/
 内存文件系统上跑完整读 / 写全流程 |
 | 并发 | 多会话并行跑，断言各自的文件互不串扰 |
 | TID | `Dispatcher` 对请求 / 错位报文 / 畸形报文的三种判定 |
+| 会话上限 | 达到 `max_sessions` 后新请求回 ERROR 4，已有会话的 TID 不受影响 |

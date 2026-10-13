@@ -463,24 +463,15 @@ async fn serve(args : ServeArgs) -> Result[Unit, CliError] {
             }
             Err(_) => ()
           }
-        @lib.Dispatch::Rejected(tid) =>
-          // A packet on the request port that is not a request is a client
-          // using the wrong TID; ERROR 5 belongs on that client's own port.
+        @lib.Dispatch::Rejected(tid~, error~) =>
+          // A refused request still gets an answer on the client's own port:
+          // ERROR 5 for a client on the wrong TID, ERROR 4 when the session
+          // ceiling is full. The dispatcher already decided which.
           reject_session(
             tid,
             peer,
-            @lib.ErrorCode::UnknownTransferId,
-            "unknown transfer id",
-          )
-        @lib.Dispatch::Busy(tid) =>
-          // A request past the session ceiling: ERROR 4 (illegal operation) is
-          // the honest code, since the request is well-formed but the server
-          // cannot take it right now. Running sessions are not disturbed.
-          reject_session(
-            tid,
-            peer,
-            @lib.ErrorCode::IllegalOperation,
-            "server busy",
+            error.error_code(),
+            error.message(),
           )
         @lib.Dispatch::Ignored => ()
       }
@@ -491,7 +482,8 @@ async fn serve(args : ServeArgs) -> Result[Unit, CliError] {
 
 ///|
 /// Sends one ERROR packet from a fresh TID, for a request the accept loop
-/// refuses before a session exists (wrong TID, or past the session ceiling).
+/// refuses before a session exists (a client on the wrong TID, or a request
+/// past the session ceiling).
 ///
 /// A socket that cannot be opened or written is not worth failing over: the
 /// peer is already being told "no", and a second failure is just the same

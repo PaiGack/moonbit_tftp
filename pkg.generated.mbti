@@ -35,6 +35,8 @@ pub let max_filename_length : Int
 
 pub let max_timeout : Int
 
+pub let max_tsize : Int
+
 pub let min_block_size : Int
 
 pub let min_timeout : Int
@@ -169,8 +171,7 @@ pub fn DecodeError::to_repr(Self) -> @debug.Repr
 
 pub(all) enum Dispatch {
   Started(String)
-  Rejected(String)
-  Busy(String)
+  Rejected(tid~ : String, error~ : ServerError)
   Ignored
 } derive(Eq, @debug.Debug)
 pub fn Dispatch::equal(Self, Self) -> Bool
@@ -388,6 +389,7 @@ pub(all) enum ServerError {
   FileNotFound(String)
   DiskFull(String)
   FileAlreadyExists(String)
+  UnknownTransferId(String)
   OptionNegotiationFailed(String)
   Timeout
 } derive(Eq, @debug.Debug)
