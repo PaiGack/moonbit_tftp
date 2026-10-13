@@ -2,24 +2,31 @@ name: CI
 
 on:
   push:
+    branches: [main]
   pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
-  ci:
+  moonbit:
+    name: MoonBit check, test & FTP demo
     runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v5
 
-      - name: Install MoonBit
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # The whole CI — check / test / build / real-server demo / cleanup —
+      # lives in scripts/ci.sh, which .cnb.yml calls too, so the two
+      # pipelines cannot drift apart.
+      - name: Install MoonBit toolchain
         run: |
           curl -fsSL https://cli.moonbitlang.com/install/unix.sh | bash
-          echo "$HOME/.moon/bin" >> $GITHUB_PATH
+          echo "$HOME/.moon/bin" >> "$GITHUB_PATH"
 
-      - name: Check
-        run: moon check
-
-      - name: Format
-        run: moon fmt --check
-
-      - name: Test
-        run: moon test
+      - name: Run CI
+        run: bash scripts/ci.sh

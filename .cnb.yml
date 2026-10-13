@@ -1,19 +1,35 @@
-# CNB 流水线：https://docs.cnb.cool/zh/pipeline/index.html
-# 与 .github/workflows/ci.yml 覆盖同一套检查，双仓提交时保持一致。
+# CNB 流水线按 GitHub Actions（.github/workflows/ci.yml）的 job 逐步对齐。
+.tftp-ci-env: &tftp-ci-env
+  docker:
+    build:
+      dockerfile: .ide/Dockerfile
+      versionBy:
+        - .ide/Dockerfile
+
+# 与 GitHub Actions 的 job 一一对应，共用同一段步骤，避免两处流水线漂移。
+.ci: &ci
+  name: moonbit
+  script: bash scripts/ci.sh
+
 main:
   push:
-    - stages:
-        - name: check
-          script: moon check --target all
-        - name: fmt
-          script: moon fmt --check
-        - name: test
-          script: moon test --target all
+    - <<: *tftp-ci-env
+      services:
+        - docker
+      stages:
+        - *ci
   pull_request:
-    - stages:
-        - name: check
-          script: moon check --target all
-        - name: fmt
-          script: moon fmt --check
-        - name: test
-          script: moon test --target all
+    - <<: *tftp-ci-env
+      services:
+        - docker
+      stages:
+        - *ci
+
+$:
+  vscode:
+    - docker:
+        build: .ide/Dockerfile
+        image: cnbcool/default-dev-env:latest
+      services:
+        - vscode
+        - docker
