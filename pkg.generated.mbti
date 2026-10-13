@@ -2,6 +2,7 @@
 package "PaiGack/tftp"
 
 import {
+  "mizchi/x/socket",
   "moonbitlang/core/debug",
 }
 
@@ -56,9 +57,19 @@ pub fn opcode_of(Int) -> Opcode?
 
 pub fn parse_options(Packet) -> Result[RequestedOptions, NegotiationError]
 
+pub fn peer_error(ErrorCode, String) -> ServerError
+
+pub async fn[T : FileSystem] plan_request(ServerOptions, T, Packet) -> Result[RequestAction, ServerError]
+
 pub async fn[T : Transport] put(T, String, String, Bytes, ClientOptions) -> Result[TransferOutcome, ClientError]
 
 pub fn resolve_options(RequestedOptions, (RequestedOption) -> Result[String?, NegotiationError]) -> Result[Options, NegotiationError]
+
+pub fn resolve_path(String, String) -> Result[String, ServerError]
+
+pub async fn[T : Transport] serve_read(T, String, Bytes, AcceptedOptions, ServerOptions) -> Result[Int, ServerError]
+
+pub async fn[T : Transport] serve_write(T, String, AcceptedOptions, ServerOptions) -> Result[Bytes, ServerError]
 
 pub fn split_blocks(Bytes, Int) -> Array[Bytes]
 
@@ -72,11 +83,25 @@ pub fn take_options(Bytes, Int) -> Array[TftpOption]?
 
 pub fn take_u16(Bytes, Int) -> (UInt16, Int)?
 
+pub fn timed_out_packet() -> Packet
+
 pub fn timeout_to_ms(Int) -> Int
+
+pub fn to_error_packet(ServerError) -> Packet
 
 // Errors
 
 // Types and methods
+pub struct AcceptedOptions {
+  options : Options?
+  first_packet : Packet?
+} derive(Eq, @debug.Debug)
+pub fn AcceptedOptions::equal(Self, Self) -> Bool
+pub fn AcceptedOptions::first_packet(Self) -> Packet?
+pub fn AcceptedOptions::not_equal(Self, Self) -> Bool
+pub fn AcceptedOptions::options(Self) -> Options?
+pub fn AcceptedOptions::to_repr(Self) -> @debug.Repr
+
 pub(all) enum ClientError {
   PeerError(ErrorCode, String)
   Timeout
@@ -109,6 +134,14 @@ pub fn ClientOptions::with_mode(Self, Mode) -> Self
 pub fn ClientOptions::with_options(Self, Array[TftpOption]) -> Self
 pub fn ClientOptions::with_timeout(Self, Int) -> Self
 
+pub struct CounterTid {
+  mut next_port : Int
+} derive(@debug.Debug)
+pub fn CounterTid::allocate(Self, String) -> String
+pub fn CounterTid::new(Int) -> Self
+pub fn CounterTid::to_repr(Self) -> @debug.Repr
+pub impl TidAllocator for CounterTid
+
 pub struct Datagram {
   payload : Bytes
   peer : String
@@ -130,6 +163,25 @@ pub fn DecodeError::equal(Self, Self) -> Bool
 pub fn DecodeError::not_equal(Self, Self) -> Bool
 pub fn DecodeError::to_repr(Self) -> @debug.Repr
 
+pub(all) enum Dispatch {
+  Started(String)
+  Rejected(String)
+  Ignored
+} derive(Eq, @debug.Debug)
+pub fn Dispatch::equal(Self, Self) -> Bool
+pub fn Dispatch::not_equal(Self, Self) -> Bool
+pub fn Dispatch::to_repr(Self) -> @debug.Repr
+
+pub struct Dispatcher[A] {
+  allocator : A
+  mut started : Int
+  max_sessions : Int
+} derive(@debug.Debug)
+pub fn[A] Dispatcher::new(A, Int) -> Self[A]
+pub fn[A : TidAllocator] Dispatcher::route(Self[A], Datagram) -> Dispatch
+pub fn[A] Dispatcher::started(Self[A]) -> Int
+pub fn[A : @debug.Debug] Dispatcher::to_repr(Self[A]) -> @debug.Repr
+
 pub(all) enum ErrorCode {
   Undefined
   FileNotFound
@@ -145,6 +197,15 @@ pub fn ErrorCode::equal(Self, Self) -> Bool
 pub fn ErrorCode::not_equal(Self, Self) -> Bool
 pub fn ErrorCode::to_repr(Self) -> @debug.Repr
 
+pub struct HostFileSystem {
+  root : String
+}
+pub async fn HostFileSystem::exists(Self, String) -> Bool
+pub fn HostFileSystem::new() -> Self
+pub async fn HostFileSystem::read(Self, String) -> Result[Bytes, ServerError]
+pub async fn HostFileSystem::write(Self, String, Bytes) -> Result[Unit, ServerError]
+pub impl FileSystem for HostFileSystem
+
 pub struct Mailbox {
   queue : Array[Datagram]
   mut drop_next : Bool
@@ -153,6 +214,23 @@ pub fn Mailbox::drop_next_packet(Self) -> Unit
 pub fn Mailbox::inject(Self, Datagram) -> Unit
 pub fn Mailbox::new() -> Self
 pub fn Mailbox::to_repr(Self) -> @debug.Repr
+
+pub struct MemoryFileSystem {
+  files : Map[String, Bytes]
+  mut disk_full : Bool
+  mut read_fails : Bool
+}
+pub fn MemoryFileSystem::break_reads(Self) -> Unit
+pub async fn MemoryFileSystem::exists(Self, String) -> Bool
+pub fn MemoryFileSystem::get(Self, String) -> Bytes?
+pub fn MemoryFileSystem::has(Self, String) -> Bool
+pub fn MemoryFileSystem::make_full(Self) -> Unit
+pub fn MemoryFileSystem::new() -> Self
+pub fn MemoryFileSystem::paths(Self) -> Array[String]
+pub fn MemoryFileSystem::put(Self, String, Bytes) -> Unit
+pub async fn MemoryFileSystem::read(Self, String) -> Result[Bytes, ServerError]
+pub async fn MemoryFileSystem::write(Self, String, Bytes) -> Result[Unit, ServerError]
+pub impl FileSystem for MemoryFileSystem
 
 pub struct MemoryTransport {
   address : String
@@ -256,6 +334,14 @@ pub fn Recv::equal(Self, Self) -> Bool
 pub fn Recv::not_equal(Self, Self) -> Bool
 pub fn Recv::to_repr(Self) -> @debug.Repr
 
+pub(all) enum RequestAction {
+  ServeFile(String)
+  ReceiveFile(String)
+} derive(Eq, @debug.Debug)
+pub fn RequestAction::equal(Self, Self) -> Bool
+pub fn RequestAction::not_equal(Self, Self) -> Bool
+pub fn RequestAction::to_repr(Self) -> @debug.Repr
+
 pub struct RequestedOption {
   kind : OptionKind
   request_value : Int
@@ -277,6 +363,62 @@ pub fn RequestedOptions::not_equal(Self, Self) -> Bool
 pub fn RequestedOptions::options(Self) -> Array[RequestedOption]
 pub fn RequestedOptions::to_repr(Self) -> @debug.Repr
 pub fn RequestedOptions::tsize_hint(Self) -> Int?
+
+pub(all) enum ServerError {
+  IllegalOperation(String)
+  AccessViolation(String)
+  FileNotFound(String)
+  DiskFull(String)
+  FileAlreadyExists(String)
+  OptionNegotiationFailed(String)
+  Timeout
+} derive(Eq, @debug.Debug)
+pub fn ServerError::equal(Self, Self) -> Bool
+pub fn ServerError::error_code(Self) -> ErrorCode
+pub fn ServerError::message(Self) -> String
+pub fn ServerError::not_equal(Self, Self) -> Bool
+pub fn ServerError::to_packet(Self) -> Packet
+pub fn ServerError::to_repr(Self) -> @debug.Repr
+
+pub struct ServerOptions {
+  root : String
+  write_policy : WritePolicy
+  max_sessions : Int
+  max_retries : Int
+} derive(Eq, @debug.Debug)
+pub fn ServerOptions::default() -> Self
+pub fn ServerOptions::equal(Self, Self) -> Bool
+pub fn ServerOptions::max_retries(Self) -> Int
+pub fn ServerOptions::max_sessions(Self) -> Int
+pub fn ServerOptions::not_equal(Self, Self) -> Bool
+pub fn ServerOptions::root(Self) -> String
+pub fn ServerOptions::to_repr(Self) -> @debug.Repr
+pub fn ServerOptions::with_max_retries(Self, Int) -> Self
+pub fn ServerOptions::with_max_sessions(Self, Int) -> Self
+pub fn ServerOptions::with_root(Self, String) -> Self
+pub fn ServerOptions::with_write_policy(Self, WritePolicy) -> Self
+pub fn ServerOptions::write_policy(Self) -> WritePolicy
+
+pub(all) enum SessionOutcome {
+  Read(Int)
+  Written(Int)
+  Failed(ServerError)
+} derive(Eq, @debug.Debug)
+pub fn SessionOutcome::bytes(Self) -> Int
+pub fn SessionOutcome::equal(Self, Self) -> Bool
+pub fn SessionOutcome::error(Self) -> ServerError?
+pub fn SessionOutcome::not_equal(Self, Self) -> Bool
+pub fn SessionOutcome::to_repr(Self) -> @debug.Repr
+
+pub struct SocketSession {
+  socket : @socket.UdpClient
+  tid : String
+}
+pub fn SocketSession::close(Self) -> Unit
+pub async fn SocketSession::new(String, String) -> Self
+pub async fn SocketSession::recv(Self, Int) -> Recv
+pub async fn SocketSession::send(Self, Bytes) -> Unit
+pub fn SocketSession::tid(Self) -> String
 
 pub struct TftpOption {
   name : String
@@ -309,9 +451,44 @@ pub fn TransferResult::equal(Self, Self) -> Bool
 pub fn TransferResult::not_equal(Self, Self) -> Bool
 pub fn TransferResult::to_repr(Self) -> @debug.Repr
 
+pub struct TransferSession[U, T] {
+  transport : U
+  files : T
+  peer : String
+  options : ServerOptions
+}
+pub fn[U, T] TransferSession::new(U, T, String, ServerOptions) -> Self[U, T]
+pub async fn[U : Transport, T : FileSystem] TransferSession::serve(Self[U, T], Packet) -> SessionOutcome
+pub async fn[U : Transport, T] TransferSession::step_write(Self[U, T], UInt16, Bytes, Int) -> (Bool, SessionOutcome)
+
+pub(all) enum WritePolicy {
+  CreateOnly
+  AllowOverwrite
+} derive(Eq, @debug.Debug)
+pub fn WritePolicy::equal(Self, Self) -> Bool
+pub fn WritePolicy::not_equal(Self, Self) -> Bool
+pub fn WritePolicy::to_repr(Self) -> @debug.Repr
+
 // Type aliases
 
 // Traits
+pub(open) trait FileSystem {
+  async fn read(Self, String) -> Result[Bytes, ServerError]
+  async fn write(Self, String, Bytes) -> Result[Unit, ServerError]
+  async fn exists(Self, String) -> Bool
+}
+
+pub(open) trait ServerTransport {
+  async fn send(Self, Bytes, String) -> Unit
+  async fn recv(Self, Int) -> Recv
+  fn local_tid(Self) -> String
+  fn close(Self) -> Unit
+}
+
+pub trait TidAllocator {
+  fn allocate(Self, String) -> String
+}
+
 pub(open) trait Transport {
   async fn send(Self, Bytes, String) -> Unit
   async fn recv(Self, String, Int) -> Recv
