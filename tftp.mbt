@@ -37,7 +37,7 @@ pub extend Opcode with @moonbitlang/core/debug.Debug::{to_repr}
 
 ///|
 /// The numeric opcode of a packet, as written on the wire.
-fn Opcode::code(self : Opcode) -> Int32 {
+pub fn Opcode::code(self : Opcode) -> Int32 {
   match self {
     Rrq => 1
     Wrq => 2
@@ -50,7 +50,7 @@ fn Opcode::code(self : Opcode) -> Int32 {
 
 ///|
 /// The opcode encoded in the first two bytes of a packet.
-fn opcode_of(code : Int32) -> Opcode? {
+pub fn opcode_of(code : Int32) -> Opcode? {
   match code {
     1 => Some(Rrq)
     2 => Some(Wrq)
@@ -226,6 +226,54 @@ pub extend Packet with Eq::{not_equal, equal}
 pub extend Packet with @moonbitlang/core/debug.Debug::{to_repr}
 
 ///|
+/// The payload of a DATA packet, `None` for every other packet.
+///
+/// The packet layer stays encoding-only; the client and server state machines
+/// read packets through these accessors so `Packet` keeps its payload opaque.
+pub fn Packet::data_payload(self : Packet) -> Bytes? {
+  match self {
+    Data(_, payload) => Some(payload)
+    _ => None
+  }
+}
+
+///|
+/// The block number of a DATA or ACK packet, `None` for every other packet.
+pub fn Packet::block_number(self : Packet) -> UInt16? {
+  match self {
+    Data(block, _) | Ack(block) => Some(block)
+    _ => None
+  }
+}
+
+///|
+/// The mode of a RRQ/WRQ, `None` for every other packet.
+pub fn Packet::mode(self : Packet) -> Mode? {
+  match self {
+    Rrq(_, mode, _) | Wrq(_, mode, _) => Some(mode)
+    _ => None
+  }
+}
+
+///|
+/// The options carried by a RRQ/WRQ/OACK, `None` for every other packet.
+pub fn Packet::options(self : Packet) -> Array[TftpOption]? {
+  match self {
+    Rrq(_, _, options) | Wrq(_, _, options) | Oack(options) => Some(options)
+    _ => None
+  }
+}
+
+///|
+/// The error code and message of an ERROR packet, `None` for every other packet.
+pub fn Packet::error_info(self : Packet) -> (ErrorCode, String)? {
+  match self {
+    Error(code, message) => Some((code, message))
+    _ => None
+  }
+}
+
+///|
 /// The opcode a packet would be sent with.
 fn Packet::opcode(self : Packet) -> Opcode {
   match self {
@@ -344,7 +392,7 @@ pub fn encode(packet : Packet) -> Bytes {
 
 ///|
 /// Reads the 2-byte opcode at `offset` and advances past it.
-fn take_opcode(bytes : Bytes, offset : Int32) -> (Opcode, Int32)? {
+pub fn take_opcode(bytes : Bytes, offset : Int32) -> (Opcode, Int32)? {
   if offset + 2 > bytes.length() {
     None
   } else {
@@ -358,7 +406,7 @@ fn take_opcode(bytes : Bytes, offset : Int32) -> (Opcode, Int32)? {
 
 ///|
 /// Reads a 2-byte unsigned integer at `offset` and advances past it.
-fn take_u16(bytes : Bytes, offset : Int32) -> (UInt16, Int32)? {
+pub fn take_u16(bytes : Bytes, offset : Int32) -> (UInt16, Int32)? {
   if offset + 2 > bytes.length() {
     None
   } else {
@@ -369,7 +417,7 @@ fn take_u16(bytes : Bytes, offset : Int32) -> (UInt16, Int32)? {
 ///|
 /// Reads a `\0`-terminated field starting at `offset`, returning the field and
 /// the offset just past its terminator.
-fn take_cstring(bytes : Bytes, offset : Int32) -> (String, Int32)? {
+pub fn take_cstring(bytes : Bytes, offset : Int32) -> (String, Int32)? {
   let mut end = offset
   while end < bytes.length() && bytes[end] != 0 {
     end = end + 1
@@ -390,7 +438,7 @@ fn take_cstring(bytes : Bytes, offset : Int32) -> (String, Int32)? {
 
 ///|
 /// Reads `Option\0Value\0` pairs until the packet ends.
-fn take_options(bytes : Bytes, offset : Int32) -> Array[TftpOption]? {
+pub fn take_options(bytes : Bytes, offset : Int32) -> Array[TftpOption]? {
   let options : Array[TftpOption] = []
   let mut cursor = offset
   while cursor < bytes.length() {
@@ -411,7 +459,7 @@ fn take_options(bytes : Bytes, offset : Int32) -> Array[TftpOption]? {
 ///|
 /// Reads a `\0`-terminated field, reporting a `DecodeError` instead of `None`
 /// so the caller can tell "packet too short" from "no terminator".
-fn take_field(
+pub fn take_field(
   bytes : Bytes,
   offset : Int32,
 ) -> Result[(String, Int32), DecodeError] {

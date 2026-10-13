@@ -6,6 +6,12 @@ import {
 }
 
 // Values
+pub fn block_after(UInt16, UInt16) -> Bool
+
+pub fn block_before(UInt16, UInt16) -> Bool
+
+pub fn block_follows(UInt16, UInt16) -> Bool
+
 pub fn decode(Bytes) -> Result[Packet, DecodeError]
 
 pub let default_block_size : Int
@@ -15,6 +21,10 @@ pub let default_port : Int
 pub let default_timeout : Int
 
 pub fn encode(Packet) -> Bytes
+
+pub async fn[T : Transport] get(T, String, String, ClientOptions) -> Result[TransferOutcome, ClientError]
+
+pub fn join_blocks(Array[Bytes]) -> Bytes
 
 pub let max_block_size : Int
 
@@ -28,13 +38,88 @@ pub let min_timeout : Int
 
 pub fn negotiation_error_packet(NegotiationError) -> Packet
 
+pub fn netascii_decode(NetasciiState, Bytes) -> (NetasciiState, Bytes)
+
+pub fn netascii_decode_all(Bytes) -> Bytes
+
+pub fn netascii_decode_finish(NetasciiState, Bytes) -> Bytes
+
+pub fn netascii_encode(NetasciiState, Bytes) -> (NetasciiState, Bytes)
+
+pub fn netascii_encode_all(Bytes) -> Bytes
+
+pub fn netascii_encode_finish(NetasciiState, Bytes) -> Bytes
+
+pub fn next_block(UInt16) -> UInt16
+
+pub fn opcode_of(Int) -> Opcode?
+
 pub fn parse_options(Packet) -> Result[RequestedOptions, NegotiationError]
 
+pub async fn[T : Transport] put(T, String, String, Bytes, ClientOptions) -> Result[TransferOutcome, ClientError]
+
 pub fn resolve_options(RequestedOptions, (RequestedOption) -> Result[String?, NegotiationError]) -> Result[Options, NegotiationError]
+
+pub fn split_blocks(Bytes, Int) -> Array[Bytes]
+
+pub fn take_cstring(Bytes, Int) -> (String, Int)?
+
+pub fn take_field(Bytes, Int) -> Result[(String, Int), DecodeError]
+
+pub fn take_opcode(Bytes, Int) -> (Opcode, Int)?
+
+pub fn take_options(Bytes, Int) -> Array[TftpOption]?
+
+pub fn take_u16(Bytes, Int) -> (UInt16, Int)?
+
+pub fn timeout_to_ms(Int) -> Int
 
 // Errors
 
 // Types and methods
+pub(all) enum ClientError {
+  PeerError(ErrorCode, String)
+  Timeout
+  Protocol(String)
+  BadRequest(String)
+} derive(Eq, @debug.Debug)
+pub fn ClientError::equal(Self, Self) -> Bool
+pub fn ClientError::not_equal(Self, Self) -> Bool
+pub fn ClientError::to_repr(Self) -> @debug.Repr
+
+pub struct ClientOptions {
+  mode : Mode
+  block_size : Int
+  timeout_seconds : Int
+  max_retries : Int
+  options : Array[TftpOption]
+} derive(Eq, @debug.Debug)
+pub fn ClientOptions::block_size(Self) -> Int
+pub fn ClientOptions::default() -> Self
+pub fn ClientOptions::equal(Self, Self) -> Bool
+pub fn ClientOptions::max_retries(Self) -> Int
+pub fn ClientOptions::mode(Self) -> Mode
+pub fn ClientOptions::not_equal(Self, Self) -> Bool
+pub fn ClientOptions::options(Self) -> Array[TftpOption]
+pub fn ClientOptions::timeout_seconds(Self) -> Int
+pub fn ClientOptions::to_repr(Self) -> @debug.Repr
+pub fn ClientOptions::with_block_size(Self, Int) -> Self
+pub fn ClientOptions::with_max_retries(Self, Int) -> Self
+pub fn ClientOptions::with_mode(Self, Mode) -> Self
+pub fn ClientOptions::with_options(Self, Array[TftpOption]) -> Self
+pub fn ClientOptions::with_timeout(Self, Int) -> Self
+
+pub struct Datagram {
+  payload : Bytes
+  peer : String
+} derive(Eq, @debug.Debug)
+pub fn Datagram::equal(Self, Self) -> Bool
+pub fn Datagram::new(Bytes, String) -> Self
+pub fn Datagram::not_equal(Self, Self) -> Bool
+pub fn Datagram::payload(Self) -> Bytes
+pub fn Datagram::peer(Self) -> String
+pub fn Datagram::to_repr(Self) -> @debug.Repr
+
 pub(all) enum DecodeError {
   Truncated
   UnknownOpcode(Int)
@@ -60,6 +145,28 @@ pub fn ErrorCode::equal(Self, Self) -> Bool
 pub fn ErrorCode::not_equal(Self, Self) -> Bool
 pub fn ErrorCode::to_repr(Self) -> @debug.Repr
 
+pub struct Mailbox {
+  queue : Array[Datagram]
+  mut drop_next : Bool
+} derive(@debug.Debug)
+pub fn Mailbox::drop_next_packet(Self) -> Unit
+pub fn Mailbox::inject(Self, Datagram) -> Unit
+pub fn Mailbox::new() -> Self
+pub fn Mailbox::to_repr(Self) -> @debug.Repr
+
+pub struct MemoryTransport {
+  address : String
+  outbox : Mailbox
+  inbox : Mailbox
+}
+pub fn MemoryTransport::inbox(Self) -> Mailbox
+pub fn MemoryTransport::local_peer(Self) -> String
+pub fn MemoryTransport::outbox(Self) -> Mailbox
+pub fn MemoryTransport::pair(String, String) -> (Self, Self)
+pub async fn MemoryTransport::recv(Self, String, Int) -> Recv
+pub async fn MemoryTransport::send(Self, Bytes, String) -> Unit
+pub impl Transport for MemoryTransport
+
 pub(all) enum Mode {
   Netascii
   Octet
@@ -77,6 +184,14 @@ pub fn NegotiationError::equal(Self, Self) -> Bool
 pub fn NegotiationError::not_equal(Self, Self) -> Bool
 pub fn NegotiationError::to_repr(Self) -> @debug.Repr
 
+pub(all) enum NetasciiState {
+  Clean
+  LocalCr
+} derive(Eq, @debug.Debug)
+pub fn NetasciiState::equal(Self, Self) -> Bool
+pub fn NetasciiState::not_equal(Self, Self) -> Bool
+pub fn NetasciiState::to_repr(Self) -> @debug.Repr
+
 pub(all) enum Opcode {
   Rrq
   Wrq
@@ -85,6 +200,7 @@ pub(all) enum Opcode {
   Error
   Oack
 } derive(Eq, @debug.Debug)
+pub fn Opcode::code(Self) -> Int
 pub fn Opcode::equal(Self, Self) -> Bool
 pub fn Opcode::not_equal(Self, Self) -> Bool
 pub fn Opcode::to_repr(Self) -> @debug.Repr
@@ -123,9 +239,22 @@ pub(all) enum Packet {
   Error(ErrorCode, String)
   Oack(Array[TftpOption])
 } derive(Eq, @debug.Debug)
+pub fn Packet::block_number(Self) -> UInt16?
+pub fn Packet::data_payload(Self) -> Bytes?
 pub fn Packet::equal(Self, Self) -> Bool
+pub fn Packet::error_info(Self) -> (ErrorCode, String)?
+pub fn Packet::mode(Self) -> Mode?
 pub fn Packet::not_equal(Self, Self) -> Bool
+pub fn Packet::options(Self) -> Array[TftpOption]?
 pub fn Packet::to_repr(Self) -> @debug.Repr
+
+pub(all) enum Recv {
+  Packet(Datagram)
+  Timeout
+} derive(Eq, @debug.Debug)
+pub fn Recv::equal(Self, Self) -> Bool
+pub fn Recv::not_equal(Self, Self) -> Bool
+pub fn Recv::to_repr(Self) -> @debug.Repr
 
 pub struct RequestedOption {
   kind : OptionKind
@@ -160,6 +289,31 @@ pub fn TftpOption::not_equal(Self, Self) -> Bool
 pub fn TftpOption::to_repr(Self) -> @debug.Repr
 pub fn TftpOption::value(Self) -> String
 
+pub struct TransferOutcome {
+  result : TransferResult
+  tsize : Int?
+} derive(Eq, @debug.Debug)
+pub fn TransferOutcome::equal(Self, Self) -> Bool
+pub fn TransferOutcome::not_equal(Self, Self) -> Bool
+pub fn TransferOutcome::received(Self) -> Bytes?
+pub fn TransferOutcome::result(Self) -> TransferResult
+pub fn TransferOutcome::sent(Self) -> Int?
+pub fn TransferOutcome::to_repr(Self) -> @debug.Repr
+pub fn TransferOutcome::tsize(Self) -> Int?
+
+pub(all) enum TransferResult {
+  Received(Bytes)
+  Sent(Int)
+} derive(Eq, @debug.Debug)
+pub fn TransferResult::equal(Self, Self) -> Bool
+pub fn TransferResult::not_equal(Self, Self) -> Bool
+pub fn TransferResult::to_repr(Self) -> @debug.Repr
+
 // Type aliases
 
 // Traits
+pub(open) trait Transport {
+  async fn send(Self, Bytes, String) -> Unit
+  async fn recv(Self, String, Int) -> Recv
+  fn local_peer(Self) -> String
+}

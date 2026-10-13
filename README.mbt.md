@@ -21,13 +21,32 @@ TFTP（Trivial File Transfer Protocol，简单文件传输协议）的纯 MoonBi
 
 ## 当前状态
 
-报文层与选项协商已落地，都是纯函数、无 socket 依赖，可离线测试：
+报文层、选项协商与客户端已落地，协议与状态机都是纯函数或纯状态转移，
+不依赖 socket，可离线测试：
 
 - 六种报文的编解码、通道模式枚举、错误码枚举与畸形报文处理；
 - RFC 2347 选项协商：`blksize` / `timeout` / `tsize` 的解析与取值校验、
-  OACK 生成、拒绝路径（ERROR code 8）。
+  OACK 生成、拒绝路径（ERROR code 8）；
+- 客户端 `get` / `put` 停等状态机：超时重传、重复包去重
+  （Sorcerer's Apprentice）、block 号 u16 回绕、netascii 转换；
+- 传输抽象 `Transport` 与内存实现，让整个会话能在测试里跑起来，
+  不碰 socket。
 
-客户端 / 服务端在后续提交中逐步落地，详见 [docs/roadmap.md](docs/roadmap.md)。
+服务端在后续提交中落地，详见 [docs/roadmap.md](docs/roadmap.md)。
+
+## 使用
+
+```moonbit nocheck
+// 读一个文件；transport 由调用方注入（真实 socket 或内存实现）。
+
+///|
+let result = @tftp.get(
+  transport,
+  "127.0.0.1:69",
+  "boot.img",
+  @tftp.ClientOptions::default(),
+)
+```
 
 ## 使用
 
