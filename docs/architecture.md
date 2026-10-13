@@ -11,11 +11,15 @@ PaiGack/tftp
 ├── transport.mbt            公开 API（UDP 收发抽象 Transport、Datagram、Recv）
 ├── transport_memory.mbt     公开 API（内存实现，离线测试用）
 ├── client.mbt               公开 API（get / put 停等状态机）
+├── server.mbt               公开 API（请求处理 / 会话状态机 / TID 分发 / 路径约束）
+├── server_fs.mbt            公开 API（真实文件系统后端 + socket 会话传输）
+├── server_memory.mbt        公开 API（内存文件系统，离线测试用）
 ├── block.mbt                公开 API（block 号 u16 回绕比较）
 ├── netascii.mbt             公开 API（netascii 转换，含跨块行尾）
 ├── tftp_test.mbt            黑盒测试（只看公开 API）
 ├── options_test.mbt         黑盒测试（选项协商矩阵）
 ├── client_test.mbt          黑盒测试（状态机 + 内存传输上的完整会话）
+├── server_test.mbt          黑盒测试（路径约束 / 错误码矩阵 / 会话 / 并发）
 ├── block_test.mbt           黑盒测试（回绕比较）
 ├── netascii_test.mbt        黑盒测试（转换与块边界）
 ├── tftp_wbtest.mbt          白盒测试（可访问内部实现）
@@ -34,7 +38,7 @@ MoonBit 以目录为包，`moon.pkg` 声明该包依赖；测试按 `_test.mbt`�
         └──────┬──────┘
      ┌─────────┴─────────┐
 ┌────▼────┐        ┌─────▼─────┐
-│ client  │        │  server   │
+│ client  │        │  server   │   server 只依赖 FileSystem + Transport
 └────┬────┘        └─────┬─────┘
      └────────┬─────────┘
         ┌─────▼─────┐
@@ -47,6 +51,11 @@ MoonBit 以目录为包，`moon.pkg` 声明该包依赖；测试按 `_test.mbt`�
         │ transport │  UDP socket 收发（可替换，便于测试）
         └───────────┘
 ```
+
+服务端与客户端共享同一套协议层、选项协商与传输抽象，差别只在状态机的
+方向：客户端发请求，服务端收请求。服务端的文件系统（`FileSystem`）也是
+一个最小接口，真实实现是 `server_fs.mbt`，测试用 `server_memory.mbt` 的
+内存实现——磁盘满是真实机器上最难复现的分支，在内存实现里只是一个字段。
 
 设计原则：
 
@@ -77,3 +86,7 @@ UDP 收发基于社区 socket 抽象 `mizchi/x/socket`（底层为 `moonbitlang/
 | 状态机 | 注入时序事件，断言状态转移与输出报文 |
 | 端到端 | 内存传输后端上跑 client ↔ server 全流程 |
 | 客户端 | 内存传输上跑完整 get / put，覆盖重传、去重、回绕、netascii 跨块 |
+| 服务端 | 路径穿越用例（`..`、绝对路径、编码绕过）、错误码逐个触发、
+内存文件系统上跑完整读 / 写全流程 |
+| 并发 | 多会话并行跑，断言各自的文件互不串扰 |
+| TID | `Dispatcher` 对请求 / 错位报文 / 畸形报文的三种判定 |
