@@ -7,11 +7,11 @@
 
 ///|
 /// Default TFTP data block size, in bytes (RFC 1350).
-pub let default_block_size : Int = 512
+pub let default_block_size : Int32 = 512
 
 ///|
 /// The UDP port a TFTP server listens on for the initial request (RFC 1350).
-pub let default_port : Int = 69
+pub let default_port : Int32 = 69
 
 ///|
 /// TFTP opcodes as they appear on the wire (RFC 1350, section 5).
