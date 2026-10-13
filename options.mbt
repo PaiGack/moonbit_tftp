@@ -74,6 +74,15 @@ pub let min_block_size : Int32 = 8
 pub let max_block_size : Int32 = 65464
 
 ///|
+/// Largest `tsize` a peer may announce, in bytes.
+///
+/// RFC 2349 puts no ceiling on `tsize`: it is a whole file size, not a packet
+/// payload, so a value far past `max_block_size` is perfectly ordinary. This
+/// bound is only the `Int32` arithmetic of this implementation, and it exists
+/// so every accepted size has a definite maximum.
+pub let max_tsize : Int32 = 2147483647
+
+///|
 /// Smallest `timeout` a peer may ask for, in seconds (RFC 2349, section 3).
 pub let min_timeout : Int32 = 1
 
@@ -206,6 +215,16 @@ pub fn RequestedOptions::is_empty(self : RequestedOptions) -> Bool {
 /// rather than a bound: a read request states the placeholder 0, and anything
 /// else means the peer expects us to accept a size that is not a request. That
 /// is the `Err` a server turns into ERROR 8.
+///
+/// `tsize` is a whole file size, so unlike `blksize` it is not capped at
+/// `max_block_size`; a 100 MB file may well cross a single packet many times
+/// over. `max_tsize` is the only ceiling, and it is `Int32` arithmetic rather
+/// than anything the RFC asks for.
+///
+/// Note that `parse_decimal` does not check overflow, so a decimal wider than
+/// `Int32` wraps around before `max_tsize` ever sees it; the wrapped value is
+/// what gets kept. Such a request is outside the range the protocol cares
+/// about, so it is not worth a special case.
 pub fn parse_options(
   request : Packet,
 ) -> Result[RequestedOptions, NegotiationError] {
@@ -240,9 +259,7 @@ pub fn parse_options(
           accepted.push(RequestedOption::new(kind, value))
         }
       Tsize =>
-        if value > max_block_size {
-          // A size no single TFTP packet could carry: the same 65464-byte
-          // ceiling the option field imposes on every other value.
+        if value > max_tsize {
           continue
         } else if is_read {
           if value == 0 {
@@ -381,8 +398,9 @@ pub fn negotiation_error_packet(error : NegotiationError) -> Packet {
 ///
 /// For `blksize` and `timeout` the server may answer with at most what the
 /// client asked for: a larger value would overrun the client's buffers or its
-/// patience, a smaller one is always safe. `tsize` is exempt: the server's
-/// value *is* the file size.
+/// patience, a smaller one is always safe. `tsize` is exempt twice over: the
+/// server's value *is* the file size, and a file is not bounded by a packet
+/// payload, so neither `max_block_size` nor the client's request applies.
 ///
 /// `server_value` supplies the server-side number for an option as decimal
 /// text, or `Ok(None)` to refuse it. A refusal is fatal on purpose: the client
@@ -434,7 +452,7 @@ pub fn resolve_options(
       Tsize => {
         let value = match answer {
           Some(text) =>
-            match parse_bounded(text, 0, max_block_size) {
+            match parse_bounded(text, 0, max_tsize) {
               Some(value) => value
               None => return Err(BadTsize(text))
             }

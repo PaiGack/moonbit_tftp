@@ -281,11 +281,24 @@ test "a server answering with a non-numeric value is a rejection" {
 }
 
 ///|
-test "a server tsize past the blksize ceiling is a rejection" {
+test "a server tsize past the blksize ceiling is accepted" {
+  // `tsize` is a file size, not a packet payload: 70000 bytes is an ordinary
+  // file that happens to need more than one DATA packet (RFC 2349, section 4),
+  // and a 100 MB one only needs more of them.
+  let parsed = @tftp.parse_options(request([("tsize", "0")])).unwrap()
+  let options = @tftp.resolve_options(parsed, _option => Ok(Some("70000"))).unwrap()
+  assert_eq(options.tsize(), Some(70000))
+  assert_eq(oack_values(options), ["70000"])
+  let big = @tftp.resolve_options(parsed, _option => Ok(Some("104857600"))).unwrap()
+  assert_eq(big.tsize(), Some(104857600))
+}
+
+///|
+test "a server tsize past the Int32 ceiling is a rejection" {
   let parsed = @tftp.parse_options(request([("tsize", "0")])).unwrap()
   assert_eq(
-    @tftp.resolve_options(parsed, _option => Ok(Some("70000"))),
-    Err(@tftp.NegotiationError::BadTsize("70000")),
+    @tftp.resolve_options(parsed, _option => Ok(Some("2147483648"))),
+    Err(@tftp.NegotiationError::BadTsize("2147483648")),
   )
 }
 
@@ -372,19 +385,30 @@ test "a repeated option keeps its first occurrence (RFC 2347 says nothing)" {
 }
 
 ///|
-test "a tsize past the packet ceiling is dropped (RFC 2349 section 4)" {
-  let parsed = @tftp.parse_options(
-    request([("tsize", "65465"), ("timeout", "3")]),
-  ).unwrap()
-  assert_eq(parsed.options().length(), 1)
-  assert_eq(parsed.options()[0].kind(), @tftp.OptionKind::Timeout)
+test "a tsize past the packet ceiling is kept (RFC 2349 section 4)" {
+  // The 65464-byte `blksize` ceiling says nothing about how large a file may
+  // be, so this value is not dropped and does not cut the `timeout` short.
+  let packet = @tftp.Packet::Wrq("upload.bin", @tftp.Mode::Octet, [
+    @tftp.TftpOption::new("tsize", "65465"),
+    @tftp.TftpOption::new("timeout", "3"),
+  ])
+  let parsed = @tftp.parse_options(packet).unwrap()
+  assert_eq(parsed.options().length(), 2)
+  assert_eq(parsed.options()[0].kind(), @tftp.OptionKind::Tsize)
+  assert_eq(parsed.options()[0].request_value(), 65465)
+  assert_eq(parsed.options()[1].kind(), @tftp.OptionKind::Timeout)
 }
 
 ///|
-test "a write request tsize at the ceiling survives" {
+test "a write request tsize past the ceiling survives" {
+  // `tsize` is a whole file size, so the 65464-byte `blksize` ceiling does not
+  // apply: a 100 MB upload negotiates and reaches the OACK whole.
   let packet = @tftp.Packet::Wrq("upload.bin", @tftp.Mode::Octet, [
-    @tftp.TftpOption::new("tsize", "65464"),
+    @tftp.TftpOption::new("tsize", "104857600"),
   ])
   let parsed = @tftp.parse_options(packet).unwrap()
-  assert_eq(parsed.tsize_hint(), Some(65464))
+  assert_eq(parsed.tsize_hint(), Some(104857600))
+  let options = @tftp.resolve_options(parsed, accept_all).unwrap()
+  assert_eq(options.tsize(), Some(104857600))
+  assert_eq(oack_values(options), ["104857600"])
 }

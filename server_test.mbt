@@ -1827,15 +1827,42 @@ async test "an out-of-range answer is refused with its value spelled out" {
     Ok(requested) => requested
     Err(_) => fail("the request should parse")
   }
+  // The only way a `tsize` answer is out of range is arithmetic overflow: an
+  // ordinary 100 MB file negotiates just fine (see the case below).
   assert_eq(
-    @tftp.resolve_options(requested, fn(_option) { Ok(Some("99999999")) }),
-    Err(@tftp.BadTsize("99999999")),
+    @tftp.resolve_options(requested, fn(_option) { Ok(Some("2147483648")) }),
+    Err(@tftp.BadTsize("2147483648")),
   )
   // A session that goes down this path answers with ERROR 8 and stops, which
   // is what a client sees when the server cannot announce what it will send.
   assert_eq(
-    @tftp.ServerError::OptionNegotiationFailed("tsize=99999999").to_packet(),
-    @tftp.Packet::Error(@tftp.OptionNegotiationFailed, "tsize=99999999"),
+    @tftp.ServerError::OptionNegotiationFailed("tsize=2147483648").to_packet(),
+    @tftp.Packet::Error(@tftp.OptionNegotiationFailed, "tsize=2147483648"),
+  )
+}
+
+///|
+/// A large file is not a bad option: the `tsize` a server announces is the
+/// file size, so a value past `max_block_size` has to reach the OACK.
+async test "a large file announces its tsize instead of failing" {
+  let files = @tftp.MemoryFileSystem::new()
+  files.put("/srv/big.bin", Bytes::make(1, b'x'))
+  let request = @tftp.Packet::Rrq("big.bin", @tftp.Octet, [
+    @tftp.TftpOption::new("tsize", "0"),
+  ])
+  let requested = match @tftp.parse_options(request) {
+    Ok(requested) => requested
+    Err(_) => fail("the request should parse")
+  }
+  let options = match
+    @tftp.resolve_options(requested, fn(_option) { Ok(Some("104857600")) }) {
+    Ok(options) => options
+    Err(_) => fail("a 100 MB size is not out of range")
+  }
+  assert_eq(options.tsize(), Some(104857600))
+  assert_eq(
+    options.oack_packet(),
+    Some(@tftp.Packet::Oack([@tftp.TftpOption::new("tsize", "104857600")])),
   )
 }
 
