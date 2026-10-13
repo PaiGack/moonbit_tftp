@@ -112,3 +112,18 @@ Client                          Server
 - **OACK 顺序**：与请求中的选项顺序一致；`OACK` 取代「block 0 的 ACK」，
   之后的 DATA 从 block 1 起，按协商后的 blksize 发送。
 - **无任何选项被接受**：不发空 OACK，直接回 DATA / ACK。
+
+## 客户端实现约定（M3）
+
+- **传输抽象**：客户端只依赖 `Transport::send` / `Transport::recv`，
+  `recv` 按 `peer`（TID）过滤，报文来源不对就当作没收到。
+- **超时重传**：每个 DATA / ACK 都等对方的应答，超时按 `max_retries` 重发；
+  读传输里客户端无事可发时重复 RRQ（首块前）或重发上一个 ACK（首块后），
+  避免「一声不吭等到预算耗尽」。
+- **Sorcerer's Apprentice**：重复的 DATA 只重发同一个 ACK，不再交付数据；
+  重复的 ACK 直接忽略。两条路径都不改变文件内容。
+- **block 回绕**：比较用 `block_before` / `block_after` 的「半圆」规则
+  （RFC 1982 序列号比较），65535 与 0 相邻的语义靠它成立；朴素的 `+1`
+  比较会在回绕处把合法块判成过期。
+- **netascii**：编码时把行尾的 `\r` 暂存到下一块再决定是 `\r\n` 还是
+  `\r\0`，所以行尾正好落在块边界上也能还原成一个换行。

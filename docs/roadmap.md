@@ -22,13 +22,13 @@
 - [x] `blksize` / `timeout` / `tsize` 的取值校验与缺省回退
 - [x] 服务端 OACK 生成与拒绝路径（ERROR 8）
 
-## M3 客户端
+## M3 客户端（已完成）
 
-- [ ] 传输抽象与内存实现（便于离线测试）
-- [ ] `get` / `put` 停等状态机
-- [ ] 超时重传 + 重复包去重（Sorcerer's Apprentice）
-- [ ] block 号 u16 回绕
-- [ ] netascii 转换
+- [x] 传输抽象与内存实现（便于离线测试）
+- [x] `get` / `put` 停等状态机
+- [x] 超时重传 + 重复包去重（Sorcerer's Apprentice）
+- [x] block 号 u16 回绕
+- [x] netascii 转换
 
 ## M4 服务端
 
