@@ -9,7 +9,6 @@
 - 参赛者：rzhangsan
 - 联系方式：18774239077
 - GitHub 仓库链接：<https://github.com/PaiGack/moonbit_tftp>
-- CNB 仓库链接：<https://cnb.cool/nrzhangsan/moonbit_tftp>
 - 包名：`PaiGack/tftp`（`moon add PaiGack/tftp`）
 - 项目方向：MoonBit 网络协议基础库 / 嵌入式与网络基础设施
 - 是否为移植项目：否（独立实现，规格以 RFC 1350 / 2347 / 2348 / 2349 为准）
@@ -96,14 +95,3 @@ CLI——都用 MoonBit 写完，协议层做成不依赖 socket 的纯函数，
   并在文档中明确 TFTP 无认证无加密、只应部署在受信任内网；
 - **优先 native 后端。** TFTP 依赖宿主 UDP socket，`js` / `wasm` 后端
   的支持程度以沙箱 socket 能力为准，文档中给出平台支持矩阵。
-
-## 里程碑
-
-| 阶段 | 内容 | 状态 |
-| --- | --- | --- |
-| M0 | 模块骨架、协议常量、CI 与文档 | 已完成 |
-| M1 | 报文字节编解码与畸形输入处理 | 进行中 |
-| M2 | 选项协商（blksize / timeout / tsize） | 待开始 |
-| M3 | 客户端停等状态机、重传去重、netascii | 待开始 |
-| M4 | 服务端 TID 会话、并发管理、路径防护 | 待开始 |
-| M5 | CLI、端到端示例、覆盖率补齐 | 待开始 |
