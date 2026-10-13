@@ -39,6 +39,7 @@ moon fmt            # 格式化
 - [docs/architecture.md](docs/architecture.md) —— 包结构与设计
 - [docs/roadmap.md](docs/roadmap.md) —— 功能拆解与里程碑
 - [docs/references.md](docs/references.md) —— 参考实现与许可证
+- [docs/proposal.md](docs/proposal.md) —— 项目申报书
 
 ## 平台支持
 
