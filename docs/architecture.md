@@ -11,6 +11,7 @@ PaiGack/tftp
 ├── transport.mbt            公开 API（UDP 收发抽象 Transport、Datagram、Recv）
 ├── transport_memory.mbt     公开 API（内存实现，离线测试用）
 ├── transport_socket.mbt     公开 API（客户端真实 UDP 套接字实现）
+├── transport_socket_wbtest.mbt  白盒测试（真实 UDP 套接字实现）
 ├── client.mbt               公开 API（get / put 停等状态机）
 ├── server.mbt               公开 API（请求处理 / 会话状态机 / TID 分发 / 路径约束）
 ├── server_fs.mbt            公开 API（真实文件系统后端 + socket 会话传输，
@@ -27,6 +28,8 @@ PaiGack/tftp
 ├── tftp_wbtest.mbt          白盒测试（可访问内部实现）
 ├── server_fs_wbtest.mbt     白盒测试（真实文件系统 + socket 会话）
 ├── cmd/main/                CLI 可执行入口
+│   ├── main.mbt            get / put / serve 子命令实现
+│   └── main_wbtest.mbt     白盒测试（CLI 子命令 / 参数解析）
 └── docs/                    设计文档
 ```
 
