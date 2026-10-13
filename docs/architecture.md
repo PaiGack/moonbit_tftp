@@ -93,3 +93,4 @@ UDP 收发基于社区 socket 抽象 `mizchi/x/socket`（底层为 `moonbitlang/
 内存文件系统上跑完整读 / 写全流程 |
 | 并发 | 多会话并行跑，断言各自的文件互不串扰 |
 | TID | `Dispatcher` 对请求 / 错位报文 / 畸形报文的三种判定 |
+| 会话上限 | 达到 `max_sessions` 后新请求回 ERROR 4，已有会话的 TID 不受影响 |
