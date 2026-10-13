@@ -55,6 +55,12 @@ run git status
 
 run moon test --target native --deny-warn --enable-coverage
 run moon coverage report -f summary
+# The report above is a number, not a list: `analyze` names the lines nothing
+# runs yet. `uncovered.log` is written inside the build directory so the
+# accounting lives in one tracked place — this repo's most under-tested file
+# (`server_fs.mbt`) was invisible in the summary until `analyze` printed zero
+# for it.
+run bash -c 'moon coverage analyze > _build/uncovered.log' && cat _build/uncovered.log
 
 run moon build --target native
 run moon build --target native --release

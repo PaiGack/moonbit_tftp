@@ -54,3 +54,15 @@ async test "socket transport times out when nothing arrives" {
     Recv::Packet(_) => fail("expected no packet")
   }
 }
+
+///|
+/// The socket transport has to report the address it is bound to: a caller
+/// that needs to tell a peer where to answer reads it from here.
+async test "socket transport reports its own bound address" {
+  let transport = SocketTransport::new("127.0.0.1:69")
+  defer transport.close()
+  let bound = transport.local_peer()
+  assert_true(bound.has_prefix("0.0.0.0:"))
+  // A real port, not the 0 that was asked for: the kernel picked it.
+  assert_true(!bound.has_suffix(":0"))
+}
