@@ -1,0 +1,165 @@
+// Generated using `moon info`, DON'T EDIT IT
+package "PaiGack/tftp"
+
+import {
+  "moonbitlang/core/debug",
+}
+
+// Values
+pub fn decode(Bytes) -> Result[Packet, DecodeError]
+
+pub let default_block_size : Int
+
+pub let default_port : Int
+
+pub let default_timeout : Int
+
+pub fn encode(Packet) -> Bytes
+
+pub let max_block_size : Int
+
+pub let max_filename_length : Int
+
+pub let max_timeout : Int
+
+pub let min_block_size : Int
+
+pub let min_timeout : Int
+
+pub fn negotiation_error_packet(NegotiationError) -> Packet
+
+pub fn parse_options(Packet) -> Result[RequestedOptions, NegotiationError]
+
+pub fn resolve_options(RequestedOptions, (RequestedOption) -> Result[String?, NegotiationError]) -> Result[Options, NegotiationError]
+
+// Errors
+
+// Types and methods
+pub(all) enum DecodeError {
+  Truncated
+  UnknownOpcode(Int)
+  MissingTerminator
+  Unsupported(String)
+} derive(Eq, @debug.Debug)
+pub fn DecodeError::equal(Self, Self) -> Bool
+pub fn DecodeError::not_equal(Self, Self) -> Bool
+pub fn DecodeError::to_repr(Self) -> @debug.Repr
+
+pub(all) enum ErrorCode {
+  Undefined
+  FileNotFound
+  AccessViolation
+  DiskFull
+  IllegalOperation
+  UnknownTransferId
+  FileAlreadyExists
+  NoSuchUser
+  OptionNegotiationFailed
+} derive(Eq, @debug.Debug)
+pub fn ErrorCode::equal(Self, Self) -> Bool
+pub fn ErrorCode::not_equal(Self, Self) -> Bool
+pub fn ErrorCode::to_repr(Self) -> @debug.Repr
+
+pub(all) enum Mode {
+  Netascii
+  Octet
+  Mail
+} derive(Eq, @debug.Debug)
+pub fn Mode::equal(Self, Self) -> Bool
+pub fn Mode::not_equal(Self, Self) -> Bool
+pub fn Mode::to_repr(Self) -> @debug.Repr
+
+pub(all) enum NegotiationError {
+  BadOption(String, String)
+  BadTsize(String)
+} derive(Eq, @debug.Debug)
+pub fn NegotiationError::equal(Self, Self) -> Bool
+pub fn NegotiationError::not_equal(Self, Self) -> Bool
+pub fn NegotiationError::to_repr(Self) -> @debug.Repr
+
+pub(all) enum Opcode {
+  Rrq
+  Wrq
+  Data
+  Ack
+  Error
+  Oack
+} derive(Eq, @debug.Debug)
+pub fn Opcode::equal(Self, Self) -> Bool
+pub fn Opcode::not_equal(Self, Self) -> Bool
+pub fn Opcode::to_repr(Self) -> @debug.Repr
+
+pub(all) enum OptionKind {
+  Blksize
+  Timeout
+  Tsize
+} derive(Eq, @debug.Debug)
+pub fn OptionKind::equal(Self, Self) -> Bool
+pub fn OptionKind::not_equal(Self, Self) -> Bool
+pub fn OptionKind::to_repr(Self) -> @debug.Repr
+
+pub struct Options {
+  blksize : Int
+  timeout_seconds : Int
+  tsize : Int?
+  oack_values : Array[(String, String)]
+} derive(Eq, @debug.Debug)
+pub fn Options::blksize(Self) -> Int
+pub fn Options::default() -> Self
+pub fn Options::equal(Self, Self) -> Bool
+pub fn Options::is_empty(Self) -> Bool
+pub fn Options::not_equal(Self, Self) -> Bool
+pub fn Options::oack_packet(Self) -> Packet?
+pub fn Options::oack_values(Self) -> Array[(String, String)]
+pub fn Options::timeout_seconds(Self) -> Int
+pub fn Options::to_repr(Self) -> @debug.Repr
+pub fn Options::tsize(Self) -> Int?
+
+pub(all) enum Packet {
+  Rrq(String, Mode, Array[TftpOption])
+  Wrq(String, Mode, Array[TftpOption])
+  Data(UInt16, Bytes)
+  Ack(UInt16)
+  Error(ErrorCode, String)
+  Oack(Array[TftpOption])
+} derive(Eq, @debug.Debug)
+pub fn Packet::equal(Self, Self) -> Bool
+pub fn Packet::not_equal(Self, Self) -> Bool
+pub fn Packet::to_repr(Self) -> @debug.Repr
+
+pub struct RequestedOption {
+  kind : OptionKind
+  request_value : Int
+} derive(Eq, @debug.Debug)
+pub fn RequestedOption::equal(Self, Self) -> Bool
+pub fn RequestedOption::kind(Self) -> OptionKind
+pub fn RequestedOption::new(OptionKind, Int) -> Self
+pub fn RequestedOption::not_equal(Self, Self) -> Bool
+pub fn RequestedOption::request_value(Self) -> Int
+pub fn RequestedOption::to_repr(Self) -> @debug.Repr
+
+pub struct RequestedOptions {
+  options : Array[RequestedOption]
+  tsize_hint : Int?
+} derive(Eq, @debug.Debug)
+pub fn RequestedOptions::equal(Self, Self) -> Bool
+pub fn RequestedOptions::is_empty(Self) -> Bool
+pub fn RequestedOptions::not_equal(Self, Self) -> Bool
+pub fn RequestedOptions::options(Self) -> Array[RequestedOption]
+pub fn RequestedOptions::to_repr(Self) -> @debug.Repr
+pub fn RequestedOptions::tsize_hint(Self) -> Int?
+
+pub struct TftpOption {
+  name : String
+  value : String
+} derive(Eq, @debug.Debug)
+pub fn TftpOption::equal(Self, Self) -> Bool
+pub fn TftpOption::name(Self) -> String
+pub fn TftpOption::new(String, String) -> Self
+pub fn TftpOption::not_equal(Self, Self) -> Bool
+pub fn TftpOption::to_repr(Self) -> @debug.Repr
+pub fn TftpOption::value(Self) -> String
+
+// Type aliases
+
+// Traits

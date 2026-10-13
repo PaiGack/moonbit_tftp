@@ -7,7 +7,9 @@ PaiGack/tftp
 ├── moon.mod                 模块元数据（名称 / 版本 / 仓库 / 许可证）
 ├── moon.pkg                 根包：协议报文层
 ├── tftp.mbt                 公开 API（报文编解码、opcode / 模式 / 错误码枚举）
+├── options.mbt              公开 API（RFC 2347 选项协商、OACK、拒绝路径）
 ├── tftp_test.mbt            黑盒测试（只看公开 API）
+├── options_test.mbt         黑盒测试（选项协商矩阵）
 ├── tftp_wbtest.mbt          白盒测试（可访问内部实现）
 ├── cmd/main/                CLI 可执行入口
 └── docs/                    设计文档
@@ -31,6 +33,9 @@ MoonBit 以目录为包，`moon.pkg` 声明该包依赖；测试按 `_test.mbt`�
         │  protocol │  报文编解码 / 选项协商 / 模式转换
         └─────┬─────┘
         ┌─────▼─────┐
+        │  options  │  RFC 2347：解析 / 校验 / OACK / ERROR 8
+        └─────┬─────┘
+        ┌─────▼─────┐
         │ transport │  UDP socket 收发（可替换，便于测试）
         └───────────┘
 ```
@@ -38,7 +43,9 @@ MoonBit 以目录为包，`moon.pkg` 声明该包依赖；测试按 `_test.mbt`�
 设计原则：
 
 1. **协议层不碰 socket。** 报文编解码、选项协商、netascii 转换都是纯函数，
-   可在任意后端 `moon test`，不依赖网络。
+   可在任意后端 `moon test`，不依赖网络。选项协商分两步走：`parse_options`
+   负责「客户端要什么」，`resolve_options` 把服务端能给的答案合进去，
+   服务端只提供 `RequestedOption -> Result[String?, NegotiationError]` 回调。
 2. **传输层可替换。** 客户端 / 服务端只依赖一个最小的 UDP 收发接口，
    测试时注入内存实现即可离线跑完整会话。
 3. **会话状态机显式化。** 客户端与服务端各有一个状态机，输入是
@@ -54,7 +61,7 @@ UDP 收发计划基于社区已有的 socket 抽象（如 `mizchi/x/socket`）�
 | 层次 | 手段 |
 | --- | --- |
 | 报文编解码 | 手工构造字节序列做往返（round-trip）断言 |
-| 选项协商 | 覆盖接受 / 拒绝 / 缺省回退 |
+| 选项协商 | 覆盖接受 / 拒绝 / 缺省回退 / 非法取值 / 未知选项名 |
 | netascii | 边界字符（`\n`、`\r`、行尾跨块） |
 | 状态机 | 注入时序事件，断言状态转移与输出报文 |
 | 端到端 | 内存传输后端上跑 client ↔ server 全流程 |
