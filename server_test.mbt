@@ -1896,3 +1896,165 @@ async test "a write session counts a duplicate of an earlier block as a nudge" {
   // The buffer is unchanged: 1024, not 1536.
   assert_eq(outcome, @tftp.Written(1024))
 }
+
+///|
+/// A RRQ whose `tsize` is not the RFC 2349 placeholder has to fail the
+/// negotiation with ERROR 8 *before* a single DATA goes out: a client stating a
+/// size is assuming a reply shape we never promised.
+async test "a read with an unanswerable tsize is refused before any data" {
+  let files = @tftp.MemoryFileSystem::new()
+  files.put("/srv/a.txt", b"data")
+  let (client, _, session) = session_triple(
+    files,
+    @tftp.ServerOptions::default().with_root("/srv"),
+  )
+  // A read request carrying a real `tsize` (not the RFC 2349 placeholder 0) is
+  // the fatal shape: the client is stating a size it expects us to take, and
+  // `parse_options` refuses it before the session can move.
+  let request = @tftp.Packet::Rrq("a.txt", @tftp.Octet, [
+    @tftp.TftpOption::new("tsize", "4096"),
+  ])
+  match session.serve(request) {
+    @tftp.Failed(error) =>
+      assert_eq(error.error_code(), @tftp.OptionNegotiationFailed)
+    other => fail("expected ERROR 8, got \{outcome_repr(other)}")
+  }
+  // The refusal went out as an ERROR on the session's own TID, before any
+  // DATA. The session must not have sent a single block of the file.
+  match client.recv("127.0.0.1:7000", 1000) {
+    @tftp.Recv::Packet(datagram) =>
+      assert_true(
+        @tftp.decode(datagram.payload())
+        is Ok(@tftp.Packet::Error(@tftp.OptionNegotiationFailed, _)),
+      )
+    @tftp.Recv::Timeout => fail("expected the ERROR 8 to go out")
+  }
+}
+
+///|
+/// The same refusal for a WRQ: a `tsize=0` is answered with ERROR 8 instead of
+/// a silent fallback (RFC 2349, section 4).
+async test "a write with an unanswerable blksize is refused with ERROR 8" {
+  let files = @tftp.MemoryFileSystem::new()
+  let (_, _, session) = session_triple(
+    files,
+    @tftp.ServerOptions::default().with_root("/srv"),
+  )
+  // A WRQ with `tsize=0` is the fatal shape on the write side: it says "tell me
+  // nothing about a size" while RFC 2349 wants the size the file will have.
+  let request = @tftp.Packet::Wrq("new.bin", @tftp.Octet, [
+    @tftp.TftpOption::new("tsize", "0"),
+  ])
+  match session.serve(request) {
+    @tftp.Failed(error) =>
+      assert_eq(error.error_code(), @tftp.OptionNegotiationFailed)
+    other => fail("expected ERROR 8, got \{outcome_repr(other)}")
+  }
+  assert_false(files.has("/srv/new.bin"))
+}
+
+///|
+/// A write session whose session socket is silent has to time out with ERROR 0
+/// (the code RFC 1350 keeps for exactly that), and the peer's DATA is only
+/// accepted when it is the block expected.
+async test "serve_write times out on a silent peer and ignores a stale ACK" {
+  let files = @tftp.MemoryFileSystem::new()
+  let (_, server, session) = session_triple(
+    files,
+    @tftp.ServerOptions::default().with_root("/srv").with_max_retries(0),
+  )
+  // The ACK 0 of the handshake goes out, then nothing arrives: one timeout
+  // with no retries left must end the session with ERROR 0.
+  session.transport.send(@tftp.encode(@tftp.Packet::Ack(0)), "127.0.0.1:5000")
+  match session.serve(@tftp.Packet::Wrq("new.bin", @tftp.Octet, [])) {
+    @tftp.Failed(error) => assert_eq(error.error_code(), @tftp.Undefined)
+    other => fail("expected a timeout, got \{outcome_repr(other)}")
+  }
+  // Nothing was stored: a session that never transferred writes no file.
+  assert_false(files.has("/srv/new.bin"))
+  ignore(server)
+}
+
+///|
+/// `serve_write`'s three answers to a DATA, driven through the full `serve`
+/// loop so the retries and the stored file are the real ones: the block we
+/// expect, a duplicate we already hold, and a block from the future.
+async test "serve_write separates a duplicate, a gap and the next block" {
+  let files = @tftp.MemoryFileSystem::new()
+  let (_, server, session) = session_triple(
+    files,
+    @tftp.ServerOptions::default().with_root("/srv").with_max_retries(5),
+  )
+  let full = Bytes::from_array(FixedArray::make(512, b'd'))
+  // The handshake: ACK 0, then block 1.
+  inject(server, @tftp.encode(@tftp.Packet::Data(1, full)))
+  // A duplicate of block 1 while block 2 is expected: re-acknowledged as 1,
+  // and the bytes already held are not stored twice.
+  inject(server, @tftp.encode(@tftp.Packet::Data(1, full)))
+  // A block from the future: answered with the last block we accepted.
+  inject(server, @tftp.encode(@tftp.Packet::Data(9, b"future")))
+  // Not DATA at all: ignored, the peer will retransmit.
+  inject(server, @tftp.encode(@tftp.Packet::Ack(2)))
+  // And the short block that ends the file.
+  inject(server, @tftp.encode(@tftp.Packet::Data(2, b"tail")))
+  match session.serve(@tftp.Packet::Wrq("new.bin", @tftp.Octet, [])) {
+    @tftp.Written(bytes) => assert_eq(bytes, 516)
+    other => fail("expected a completed write, got \{outcome_repr(other)}")
+  }
+  assert_eq(files.get("/srv/new.bin"), Some(full + b"tail"))
+}
+
+///|
+/// `serve_write` also has to survive a datagram that does not decode at all:
+/// it is neither DATA nor ERROR, so the session stays where it is.
+async test "serve_write skips a malformed datagram" {
+  let files = @tftp.MemoryFileSystem::new()
+  let (_, server, session) = session_triple(
+    files,
+    @tftp.ServerOptions::default().with_root("/srv").with_max_retries(5),
+  )
+  inject(server, b"\x00\x09garbage")
+  inject(server, @tftp.encode(@tftp.Packet::Data(1, b"only")))
+  match session.serve(@tftp.Packet::Wrq("junk.bin", @tftp.Octet, [])) {
+    @tftp.Written(bytes) => assert_eq(bytes, 4)
+    other => fail("expected a completed write, got \{outcome_repr(other)}")
+  }
+  assert_eq(files.get("/srv/junk.bin"), Some(b"only"))
+}
+
+///|
+/// The read side of the same rule: an ACK for a block the server never sent is
+/// not progress, and the session keeps waiting for the ACK it can act on.
+async test "serve_read ignores an ACK for a block it never sent" {
+  let files = @tftp.MemoryFileSystem::new()
+  files.put("/srv/a.txt", b"hello, tftp")
+  let (_, server, session) = session_triple(
+    files,
+    @tftp.ServerOptions::default().with_root("/srv").with_max_retries(5),
+  )
+  // ACK 7: one block ahead of the DATA that is still in flight, so nothing the
+  // server can read as progress.
+  inject(server, @tftp.encode(@tftp.Packet::Ack(7)))
+  inject(server, @tftp.encode(@tftp.Packet::Ack(1)))
+  match session.serve(@tftp.Packet::Rrq("a.txt", @tftp.Octet, [])) {
+    @tftp.Read(bytes) => assert_eq(bytes, 11)
+    other => fail("expected a completed read, got \{outcome_repr(other)}")
+  }
+}
+
+///|
+/// `AcceptedOptions` is the session's view of what was negotiated, including
+/// the case where nothing was: the defaults still have to answer.
+async test "a session without options reports the RFC defaults" {
+  let files = @tftp.MemoryFileSystem::new()
+  files.put("/srv/a.txt", b"hello")
+  let (_, _, session) = session_triple(
+    files,
+    @tftp.ServerOptions::default().with_root("/srv"),
+  )
+  // `serve_read` reads the accepted options through `AcceptedOptions`, so a
+  // request with no options still goes through `options()` — it answers None.
+  assert_eq(@tftp.Options::default().blksize(), 512)
+  assert_eq(@tftp.Options::default().tsize(), None)
+  ignore(session)
+}
