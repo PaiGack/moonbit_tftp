@@ -59,4 +59,16 @@ run moon coverage report -f summary
 run moon build --target native
 run moon build --target native --release
 
+# ---------------------------------------------------------------------------
+# The CLI, exercised as a real program against a real server.
+#
+# `moon test` covers the library and the CLI's argument parser, but neither
+# runs the `main` that ships: the socket plumbing, the exit codes and the
+# get/put/serve loop are only wired up in `cmd/main`. This step starts the
+# built server, drives it with the built client, and compares bytes with
+# `cmp`, which is the only check that catches a client and server that both
+# think they finished a transfer that never happened.
+# ---------------------------------------------------------------------------
+run bash scripts/cli_demo.sh
+
 exit "$status"
