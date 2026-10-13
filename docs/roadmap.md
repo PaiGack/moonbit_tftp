@@ -16,11 +16,11 @@
 - [x] 通道模式枚举：netascii / octet（mail 只留枚举值，`decode` 拒绝）
 - [x] 选项 `Option\0Value\0` 拆分（取值校验留给 M2）
 
-## M2 选项协商
+## M2 选项协商（已完成）
 
-- [ ] 解析 `Option\0Value\0` 序列
-- [ ] `blksize` / `timeout` / `tsize` 的取值校验与缺省回退
-- [ ] 服务端 OACK 生成与拒绝路径（ERROR 8）
+- [x] 解析 `Option\0Value\0` 序列
+- [x] `blksize` / `timeout` / `tsize` 的取值校验与缺省回退
+- [x] 服务端 OACK 生成与拒绝路径（ERROR 8）
 
 ## M3 客户端
 

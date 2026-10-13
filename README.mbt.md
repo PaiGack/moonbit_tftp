@@ -21,9 +21,13 @@ TFTP（Trivial File Transfer Protocol，简单文件传输协议）的纯 MoonBi
 
 ## 当前状态
 
-报文层已落地：六种报文的编解码、通道模式枚举、错误码枚举与畸形报文处理，
-纯函数、无 socket 依赖，可离线测试。客户端 / 服务端在后续提交中逐步落地。
-详见 [docs/roadmap.md](docs/roadmap.md)。
+报文层与选项协商已落地，都是纯函数、无 socket 依赖，可离线测试：
+
+- 六种报文的编解码、通道模式枚举、错误码枚举与畸形报文处理；
+- RFC 2347 选项协商：`blksize` / `timeout` / `tsize` 的解析与取值校验、
+  OACK 生成、拒绝路径（ERROR code 8）。
+
+客户端 / 服务端在后续提交中逐步落地，详见 [docs/roadmap.md](docs/roadmap.md)。
 
 ## 使用
 
