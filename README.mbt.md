@@ -27,6 +27,24 @@ M0~M5 已落地：报文层、选项协商、客户端、服务端与命令行�
 
 ## 快速开始
 
+首次在干净环境（新容器 / 新机器）里跑之前，先同步一次 MoonBit registry 索引：
+
+```bash
+moon update         # 首次必跑：拉取 registry 索引，否则依赖解析失败
+```
+
+`moon update` 把 MoonBit registry 的索引克隆到本地（`~/.moon/registry`），
+`moon` 靠它才能把 `moon.mod` 里的模块名解析成具体版本。这一步只在首次
+或用久了之后需要，日常改代码不必重复执行。
+
+> 跳过它的典型报错是 `Failed to calculate build plan` +
+> `module was not found in the registry`（例如 `mizchi/x`、`moonbitlang/async`、
+> `moonbitlang/regexp`），同时伴随提示 `you may need to run 'moon update'`。
+> CI（`scripts/ci.sh`）与 Copilot 环境（`.github/workflows/copilot-setup-steps.yml`）
+> 都已把 `moon update` 作为第一步。
+
+索引就位后，日常循环是：
+
 ```bash
 moon check          # 类型检查
 moon test           # 运行测试
