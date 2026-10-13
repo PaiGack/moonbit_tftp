@@ -1,0 +1,5 @@
+// import {
+//   "PaiGack/tftp" @lib,
+// }
+
+pkgtype(kind: "executable")

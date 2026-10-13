@@ -1,0 +1,19 @@
+# CNB 流水线：https://docs.cnb.cool/zh/pipeline/index.html
+# 与 .github/workflows/ci.yml 覆盖同一套检查，双仓提交时保持一致。
+main:
+  push:
+    - stages:
+        - name: check
+          script: moon check --target all
+        - name: fmt
+          script: moon fmt --check
+        - name: test
+          script: moon test --target all
+  pull_request:
+    - stages:
+        - name: check
+          script: moon check --target all
+        - name: fmt
+          script: moon fmt --check
+        - name: test
+          script: moon test --target all
