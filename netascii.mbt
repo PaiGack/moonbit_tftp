@@ -11,17 +11,14 @@
 /// encode (local -> wire):  \n   -> \r\n      \r   -> \r\0
 /// ```
 ///
-/// Encoding a local buffer is a pure function of that buffer plus one carried
-/// flag, because a `\r` can land on the last byte of a DATA block and its
-/// partner then belongs to the next one. `NetasciiState` is that carried flag,
-/// and it is why the codec is a pair of stateful functions rather than one
-/// `Bytes -> Bytes` conversion.
-///
-/// Decoding needs no carried state: a chunk boundary is a *chunk* boundary, not
-/// a character boundary in the local stream, so the worst a split can do is
-/// hand the caller a `\r` that later turns out to belong to a `\r\n`. The
-/// caller gets the raw bytes and can append the next chunk; the one thing the
-/// decoder must never do is drop a byte.
+/// Both directions therefore need one carried flag, because a `\r` can land on
+/// the last byte of a DATA block and its partner then belongs to the next one.
+/// `NetasciiState` is that carried flag, and it is why the codec is a pair of
+/// stateful functions rather than one `Bytes -> Bytes` conversion. On encoding
+/// the CR is held back and re-emitted when the next block says whether it is a
+/// line ending or a lone CR; on decoding the held CR is likewise resolved by
+/// the next block's first byte. The one thing either direction must never do
+/// is drop a byte.
 
 ///|
 /// The byte a pending escape belongs to, carried across a block boundary.
@@ -77,20 +74,38 @@ pub fn netascii_encode(
 ///|
 /// Decodes one block of netascii received from the wire.
 ///
-/// `\r\n` becomes `\n` and `\r\0` becomes `\r`. A `\r` with no partner *inside
-/// this chunk* is emitted as a bare `\r`: it may be the first half of an escape
-/// in the next chunk, but a decoder cannot un-emit a byte, and a following `\n`
-/// or `\0` in the next chunk is swallowed by the caller-side merge below. The
-/// common case — escapes contained in one block — is exact.
+/// `\r\n` becomes `\n` and `\r\0` becomes `\r`. A `\r` on the last byte of the
+/// block cannot be resolved yet: its partner may be the first byte of the next
+/// block, so the decoder *holds it back* and returns `LocalCr`, exactly as the
+/// encoder does. The caller then folds the next block in with that state, and
+/// the held CR is emitted (or joined to its `\n`) once its partner is known.
+/// A stream that ends on a held CR gets it from `netascii_decode_finish`.
 pub fn netascii_decode(
   state : NetasciiState,
   chunk : Bytes,
 ) -> (NetasciiState, Bytes) {
-  ignore(state)
   let out = Writer::new()
+  let mut pending_cr = state is LocalCr
   let mut i = 0
   while i < chunk.length() {
     let byte = chunk[i]
+    if pending_cr {
+      // The partner of the previous block's CR, which was held back.
+      pending_cr = false
+      if byte == b'\n' {
+        out.write_byte(b'\n')
+        i = i + 1
+        continue
+      }
+      // A held CR followed by NUL is the wire spelling of a lone CR: emit the
+      // CR and swallow the NUL. Any other byte means the CR was on its own
+      // (a tolerant bare CR), so emit it and reprocess this byte normally.
+      out.write_byte(b'\r')
+      if byte == 0 {
+        i = i + 1
+        continue
+      }
+    }
     if byte == b'\r' {
       if i + 1 < chunk.length() {
         let partner = chunk[i + 1]
@@ -104,15 +119,15 @@ pub fn netascii_decode(
           continue
         }
       }
-      // No partner in this chunk: a tolerant decoder keeps the bare CR.
-      out.write_byte(b'\r')
+      // No partner inside this block: hold the CR for the next block.
+      pending_cr = true
       i = i + 1
     } else {
       out.write_byte(byte)
       i = i + 1
     }
   }
-  (Clean, out.to_bytes())
+  (if pending_cr { LocalCr } else { Clean }, out.to_bytes())
 }
 
 ///|
@@ -147,10 +162,16 @@ pub fn netascii_encode_finish(state : NetasciiState, tail : Bytes) -> Bytes {
 }
 
 ///|
-/// Closes the stream on the decoding side. The decoder holds no state, so this
-/// is the identity; it stays for symmetry with `netascii_encode_finish` and so
-/// a future stateful decoder does not change the call sites.
+/// Closes the stream on the decoding side. A `\r` still held back at the end of
+/// the stream had no partner on the wire, so it is a real lone CR and is
+/// emitted here; nothing else is pending.
 pub fn netascii_decode_finish(state : NetasciiState, tail : Bytes) -> Bytes {
-  ignore(state)
-  tail
+  if state is LocalCr {
+    let out = Writer::new()
+    out.write_bytes(tail)
+    out.write_byte(b'\r')
+    out.to_bytes()
+  } else {
+    tail
+  }
 }
