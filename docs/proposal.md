@@ -7,8 +7,10 @@
 
 - 项目名称：MoonBit TFTP：纯 MoonBit 实现的 TFTP 客户端与服务端
 - 参赛者：rzhangsan
-- 联系方式：见 CNB 个人主页
-- 仓库链接：<https://cnb.cool/nrzhangsan/moonbit_tftp>
+- 联系方式：18774239077
+- GitHub 仓库链接：<https://github.com/PaiGack/moonbit_tftp>
+- CNB 仓库链接：<https://cnb.cool/nrzhangsan/moonbit_tftp>
+- 包名：`PaiGack/tftp`（`moon add PaiGack/tftp`）
 - 项目方向：MoonBit 网络协议基础库 / 嵌入式与网络基础设施
 - 是否为移植项目：否（独立实现，规格以 RFC 1350 / 2347 / 2348 / 2349 为准）
 
@@ -49,8 +51,8 @@ CLI——都用 MoonBit 写完，协议层做成不依赖 socket 的纯函数，
 
 ## 预期验收产物
 
-- `nrzhangsan/moonbit_tftp` 库，可通过 `moon add nrzhangsan/moonbit_tftp`
-  在 MoonBit 项目中使用其 API；
+- `PaiGack/tftp` 库，可通过 `moon add PaiGack/tftp` 在 MoonBit 项目中
+  使用其 API；
 - 报文层 100% 覆盖 RRQ / WRQ / DATA / ACK / ERROR / OACK 的编解码与
   畸形输入处理，附 RFC 条款对应的测试向量；
 - 客户端与服务端在内存传输后端上通过完整的读 / 写流程测试，
@@ -78,7 +80,7 @@ CLI——都用 MoonBit 写完，协议层做成不依赖 socket 的纯函数，
   「外部进程调用」方式参与测试，不构成本仓库的衍生作品；
 - 涉及到的第三方行为均在文档中注明来源，协议行为本身由 RFC 规定。
 
-## 与原项目的差异
+## 与典型 C 实现的思路差异
 
 由于本项目是从零实现而非移植，这里说明与「典型 C 实现」的思路差异：
 
