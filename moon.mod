@@ -17,7 +17,6 @@ license = "Apache-2.0"
 import {
   "mizchi/x@0.6.1",
   "moonbitlang/async@0.21.3",
-  "moonbitlang/regexp@0.3.6",
 }
 
 keywords = [ "tftp", "udp", "protocol", "netascii", "file-transfer" ]
