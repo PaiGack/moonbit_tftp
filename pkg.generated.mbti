@@ -33,6 +33,8 @@ pub let max_filename_length : Int
 
 pub let max_timeout : Int
 
+pub let max_tsize : Int
+
 pub let min_block_size : Int
 
 pub let min_timeout : Int
