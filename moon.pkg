@@ -2,6 +2,6 @@ import {
   "moonbitlang/core/debug",
   "moonbitlang/async",
   "moonbitlang/async/io",
-  "mizchi/x/fs",
-  "mizchi/x/socket",
+  "moonbitlang/async/fs",
+  "moonbitlang/async/socket",
 }

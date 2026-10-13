@@ -136,19 +136,21 @@ TFTP 基于 UDP，需要宿主提供 UDP socket。当前只有 `native` 是可�
 
 报文编解码、选项协商、netascii 与两个状态机都是纯函数或纯状态转移，不依赖
 socket；socket 后端（`server_fs.mbt`、`transport_socket.mbt`）依赖
-`mizchi/x` 的 `socket` / `fs` 实现。
+`moonbitlang/async` 的 `socket` / `fs` 实现。
 
 | 目标 | check 结果 | 说明 |
 | --- | --- | --- |
 | `native` | ✅ 通过 | CI 全流程（check / test / build）在 native 上跑 |
-| `js` | ✅ 通过 | 依赖 `mizchi/x` 在 js 上提供的 socket / fs 替身，可编译；未做端到端验证 |
-| `wasm` | ✅ 通过 | 同上 |
-| `wasm-gc` | ❌ 编译失败 | `mizchi/x` 的 `socket` 替身在 wasm-gc 上缺少 `.addr` 字段 |
+| `js` | ❌ 编译失败 | `moonbitlang/async` 的 `socket` / `fs` 只实现了 native 与 wasm |
+| `wasm` | ❌ 编译失败 | 同上 |
+| `wasm-gc` | ❌ 编译失败 | 同上 |
 
-`wasm-gc` 的失败点（均为 `The type ... has no field 'addr'`，error 4091）：
+`js` / `wasm-gc` 的失败点同样是「`UdpServer` / `UdpClient` / `@fs.read_file`
+在对应后端上不存在」（error 4021 / 4024）：
 
-- `server_fs.mbt:141`、`server_fs.mbt:175` —— `UdpClient.addr`
-- `transport_socket.mbt:38` —— `UdpServer.addr`
+- `server_fs.mbt` —— `@fs.read_file`、`@fs.write_file`、`@fs.exists`、
+  `@socket.UdpClient`
+- `transport_socket.mbt` —— `@socket.UdpServer`
 - 对应 `server_fs_wbtest.mbt`、`transport_socket_wbtest.mbt` 中的同类调用
 
 ### CLI `cmd/main`
@@ -161,11 +163,11 @@ CLI 是 `executable`，用 `extern "C" fn exit` 退出进程，非 native 后端
 | `native` | ✅ 通过 | `scripts/cli_demo.sh` 在真实 UDP 套接字上跑通 |
 | `js` | ❌ 编译失败 | `cmd/main/main.mbt:53` 的 `extern "C" fn exit`（error 4156） |
 | `wasm` | ❌ 编译失败 | 同上 |
-| `wasm-gc` | ❌ 编译失败 | `extern "C" fn exit`，并叠加根包在 wasm-gc 上的 `.addr` 报错 |
+| `wasm-gc` | ❌ 编译失败 | `extern "C" fn exit`，并叠加根包在 js / wasm-gc 上的 socket 报错 |
 
 > 结论：`moon check` 的失败源在「CLI 的 `extern "C"`（js / wasm）」与
-> 「`mizchi/x` socket 在 wasm-gc 上缺 `.addr`（根包 + CLI）」两处，
-> 与协议层本身无关。除 `native` 外都还没做端到端验证。
+> 「`moonbitlang/async` 的 socket / fs 只覆盖 native 与 wasm（根包 + CLI）」
+> 两处，与协议层本身无关。除 `native` 外都还没做端到端验证。
 
 ## 文档
 

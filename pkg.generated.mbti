@@ -2,7 +2,7 @@
 package "PaiGack/tftp"
 
 import {
-  "mizchi/x/socket",
+  "moonbitlang/async/socket",
   "moonbitlang/core/debug",
 }
 
