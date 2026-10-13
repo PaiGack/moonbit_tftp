@@ -806,6 +806,80 @@ test "a dispatcher ignores a datagram it cannot decode" {
 }
 
 ///|
+test "a dispatcher refuses a request once the ceiling is reached" {
+  // The ceiling bounds *concurrent* sessions. The first request starts one; the
+  // second, with the ceiling already taken, is refused rather than started.
+  let dispatcher = @tftp.Dispatcher::new(@tftp.CounterTid::new(45000), 1)
+  let first = dispatcher.route(
+    @tftp.Datagram::new(
+      @tftp.encode(@tftp.Rrq("a", @tftp.Octet, [])),
+      "10.0.0.1:1000",
+    ),
+  )
+  match first {
+    @tftp.Started(_) => ()
+    other => fail("expected a session, got \{tid_repr(other)}")
+  }
+  let second = dispatcher.route(
+    @tftp.Datagram::new(
+      @tftp.encode(@tftp.Rrq("b", @tftp.Octet, [])),
+      "10.0.0.2:1000",
+    ),
+  )
+  match second {
+    @tftp.Rejected(tid~, error~) => {
+      assert_eq(tid, "10.0.0.2:45001")
+      // ERROR 4, not ERROR 5: the client is on the right TID, the server is
+      // just full. The refusal carries the reason instead of the caller
+      // re-deriving it from the packet.
+      assert_eq(error.error_code(), @tftp.IllegalOperation)
+      assert_eq(
+        error,
+        @tftp.ServerError::IllegalOperation(
+          "too many concurrent sessions (limit 1)",
+        ),
+      )
+    }
+    other => fail("expected a refusal, got \{tid_repr(other)}")
+  }
+  // A refused request did not start a session, and the running one is intact.
+  assert_eq(dispatcher.started(), 1)
+  assert_eq(dispatcher.active(), 1)
+}
+
+///|
+test "a finished session gives its slot back" {
+  // Without releasing, the ceiling would lock the server out after N total
+  // transfers instead of bounding how many run at once.
+  let dispatcher = @tftp.Dispatcher::new(@tftp.CounterTid::new(46000), 1)
+  ignore(
+    dispatcher.route(
+      @tftp.Datagram::new(
+        @tftp.encode(@tftp.Rrq("a", @tftp.Octet, [])),
+        "10.0.0.1:1000",
+      ),
+    ),
+  )
+  assert_eq(dispatcher.active(), 1)
+  dispatcher.release()
+  assert_eq(dispatcher.active(), 0)
+  let next = dispatcher.route(
+    @tftp.Datagram::new(
+      @tftp.encode(@tftp.Rrq("b", @tftp.Octet, [])),
+      "10.0.0.2:1000",
+    ),
+  )
+  match next {
+    @tftp.Started(_) => ()
+    other =>
+      fail(
+        "expected a session after the slot was released, got \{tid_repr(other)}",
+      )
+  }
+  assert_eq(dispatcher.started(), 2)
+}
+
+///|
 test "an IPv6 peer keeps its address and only gets its port replaced" {
   let dispatcher = @tftp.Dispatcher::new(@tftp.CounterTid::new(42000), 8)
   let decision = dispatcher.route(
@@ -978,6 +1052,8 @@ test "ServerOptions accessors report what was configured" {
   // a flood cannot grow past.
   assert_eq(@tftp.ServerOptions::default().root(), ".")
   assert_eq(@tftp.ServerOptions::default().write_policy(), @tftp.CreateOnly)
+  // 32 is the one README and the CLI both state, so a server started either
+  // way has the same ceiling.
   assert_eq(@tftp.ServerOptions::default().max_sessions(), 32)
   assert_eq(@tftp.ServerOptions::default().max_retries(), 6)
 }

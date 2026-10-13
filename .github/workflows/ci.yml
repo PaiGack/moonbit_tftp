@@ -13,7 +13,7 @@ concurrency:
 
 jobs:
   moonbit:
-    name: MoonBit check, test & FTP demo
+    name: MoonBit check, test & CLI demo
     runs-on: ubuntu-latest
 
     steps:

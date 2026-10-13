@@ -131,8 +131,10 @@ pub struct ServerOptions {
   root : String
   /// Whether a WRQ may replace an existing file.
   write_policy : WritePolicy
-  /// How many sessions may run at once. A hard ceiling is what keeps a stream
-  /// of requests from growing the server without bound.
+  /// How many sessions may run at once, 32 by default. A hard ceiling is what
+  /// keeps a stream of requests from growing the server without bound: past it
+  /// `Dispatcher::route` answers `Rejected(IllegalOperation)` (ERROR 4) and the
+  /// caller refuses the request.
   max_sessions : Int32
   /// The retry budget of a session before it gives up and sends ERROR 0.
   max_retries : Int32
@@ -900,7 +902,7 @@ pub(all) enum Dispatch {
   /// caller, because there are two distinct reasons and the RFC gives each its
   /// own code: a packet that is not a request is a client on the wrong TID
   /// (ERROR 5), while a request beyond the session ceiling is a server that is
-  /// momentarily full (ERROR 4).
+  /// momentarily full (ERROR 4). Existing sessions are untouched either way.
   Rejected(tid~ : String, error~ : ServerError)
   /// Neither: a datagram that was not a request at all.
   Ignored
@@ -973,8 +975,12 @@ pub impl TidAllocator for CounterTid with fn allocate(self, peer) {
 /// from the initial TID is either answered with ERROR 5 or ignored.
 pub struct Dispatcher[A] {
   allocator : A
-  /// Sessions started so far, for the ceiling in `decision`.
+  /// Sessions started so far, lifetime total.
   mut started : Int32
+  /// Sessions currently running, which is what the ceiling is compared against:
+  /// a `started`-only count would lock the server out after the first N
+  /// transfers instead of bounding concurrency.
+  mut active : Int32
   max_sessions : Int32
 } derive(Debug)
 
@@ -985,13 +991,31 @@ pub extend Dispatcher with @moonbitlang/core/debug.Debug::{to_repr}
 /// A dispatcher that hands out TIDs through `allocator` and starts at most
 /// `max_sessions` sessions.
 pub fn[A] Dispatcher::new(allocator : A, max_sessions : Int32) -> Dispatcher[A] {
-  { allocator, started: 0, max_sessions, }
+  { allocator, started: 0, active: 0, max_sessions, }
 }
 
 ///|
 /// How many sessions this dispatcher has started.
 pub fn[A] Dispatcher::started(self : Dispatcher[A]) -> Int32 {
   self.started
+}
+
+///|
+/// How many sessions are running right now.
+pub fn[A] Dispatcher::active(self : Dispatcher[A]) -> Int32 {
+  self.active
+}
+
+///|
+/// Reports a session as over, releasing its slot.
+///
+/// The ceiling is on concurrent sessions, so it only means anything if a
+/// finished session gives its slot back; without this the dispatcher would
+/// refuse every request after the first `max_sessions` transfers.
+pub fn[A] Dispatcher::release(self : Dispatcher[A]) -> Unit {
+  if self.active > 0 {
+    self.active = self.active - 1
+  }
 }
 
 ///|
@@ -1013,20 +1037,23 @@ pub fn[A : TidAllocator] Dispatcher::route(
     Err(_) => Ignored
     Ok(packet) =>
       match packet {
-        Rrq(_, _, _) | Wrq(_, _, _) =>
-          if self.started >= self.max_sessions {
-            // Over the ceiling. An answer is still owed on a fresh TID, but
-            // no session is created, so the flood cannot grow the server.
+        Rrq(_, _, _) | Wrq(_, _, _) => {
+          let tid = self.allocator.allocate(datagram.peer())
+          if self.active >= self.max_sessions {
+            // Refuse the new session, but leave the running ones alone: the
+            // ceiling bounds concurrency, it does not cancel work in flight.
             Rejected(
-              tid=self.allocator.allocate(datagram.peer()),
+              tid~,
               error=IllegalOperation(
                 "too many concurrent sessions (limit \{self.max_sessions})",
               ),
             )
           } else {
             self.started = self.started + 1
-            Started(self.allocator.allocate(datagram.peer()))
+            self.active = self.active + 1
+            Started(tid)
           }
+        }
         // A DATA / ACK / OACK / ERROR that reached the request port is a
         // client using the wrong TID, whether it is a stale ACK from a session
         // that ended or a stray packet that never had one.

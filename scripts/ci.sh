@@ -6,8 +6,9 @@
 #
 # so the step list, the tool flags, the FTP server lifecycle and the CLI demo
 # live in one place instead of being duplicated per provider. Steps mirror the
-# GitHub Actions job one-for-one; the container start/stop is always attempted
-# so a failed demo still prints the server logs.
+# GitHub Actions job one-for-one; the demo server is always stopped and its log
+# always printed, so a failed transfer can be diagnosed from what the server
+# said rather than from the client's exit code alone.
 set -uo pipefail
 
 # Resolve the repo root from this script's own location, so it works no matter
@@ -75,8 +76,13 @@ run moon build --target native --release
 # `cmp`, which is the only check that catches a client and server that both
 # think they finished a transfer that never happened.
 #
+# It lives here rather than in a second script on purpose: `ci.sh` is the one
+# entry point both pipelines call, and a demo that can drift out of step with
+# the checks around it is a demo that silently stops running.
+#
 # Everything happens on loopback, in one container: no network hop, no flake.
 # ---------------------------------------------------------------------------
+step "CLI demo"
 CLI="_build/native/release/build/cmd/main/main.exe"
 # A port in the ephemeral range that is not 69 (unprivileged) and not 6969
 # (what docs/interop.md uses), so a stray server cannot make this pass or fail.
@@ -251,4 +257,6 @@ expect_failure "an unknown subcommand exits non-zero" "$CLI" frobnicate
 expect_failure "a flag without a value exits non-zero" \
   "$CLI" get "$REMOTE" f --blksize
 
+# The demo shares the script's `status`, so a failure in any check above is
+# already remembered and reported by the final `exit`.
 exit "$status"

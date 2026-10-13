@@ -105,6 +105,19 @@ moon run cmd/main -- put 192.168.1.10:69 ./boot.img remote/boot.img
 退出码：`0` 成功；`1` 传输失败（对端报错 / 超时 / 本地读写失败）；
 `2` 命令行用法错误。
 
+### 进度与容量校验
+
+`put` / `get` 在协商到 `tsize` 时会按整百分比打印进度行，块与块之间不刷屏：
+
+```
+boot.img: 12% (30720/262144 bytes)
+boot.img: 24% (61440/262144 bytes)
+```
+
+`put` 还会做容量校验：对端在 OACK 里确认的 `tsize` 必须等于本地实际发送的
+字节数，不一致就以非 0 退出并报 `capacity check failed`——停等协议没有别的
+方式报告对端只收下了一部分。对端不协商 `tsize`（选项可选）时不校验。
+
 ### 本机对拍
 
 一条命令就能在本机验证 put 与 get 的双向正确性：
@@ -178,7 +191,7 @@ CLI 是 `executable`，用 `extern "C" fn exit` 退出进程，非 native 后端
 
 | 目标 | check 结果 | 说明 |
 | --- | --- | --- |
-| `native` | ✅ 通过 | `scripts/cli_demo.sh` 在真实 UDP 套接字上跑通 |
+| `native` | ✅ 通过 | `scripts/ci.sh` 的 CLI 演示在真实 UDP 套接字上跑通 |
 | `js` | ❌ 编译失败 | `cmd/main/main.mbt:53` 的 `extern "C" fn exit`（error 4156） |
 | `wasm` | ❌ 编译失败 | 同上 |
 | `wasm-gc` | ❌ 编译失败 | `extern "C" fn exit`，并叠加根包在 js / wasm-gc 上的 socket 报错 |

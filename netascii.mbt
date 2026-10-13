@@ -142,8 +142,9 @@ pub fn netascii_encode_all(bytes : Bytes) -> Bytes {
 ///|
 /// Decodes a whole buffer in one go.
 pub fn netascii_decode_all(bytes : Bytes) -> Bytes {
-  let (_, decoded) = netascii_decode(Clean, bytes)
-  decoded
+  let (state, decoded) = netascii_decode(Clean, bytes)
+  // A whole buffer has no next block, so a held CR is a real lone CR here.
+  netascii_decode_finish(state, decoded)
 }
 
 ///|

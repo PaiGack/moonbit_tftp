@@ -98,24 +98,53 @@ test "a line ending split across blocks survives the decode" {
 }
 
 ///|
-test "a cr split across blocks whose partner is nul decodes to a lone cr" {
-  // CR at the end of block one, NUL at the start of block two: that is the
-  // wire spelling of a lone CR, so the pair must decode to a single CR.
-  let first = bytes_from("tail\r")
-  let second = Bytes::from_array([b'\x00', b'h', b'e', b'a', b'd'])
-  let (state, decoded_first) = @tftp.netascii_decode(@tftp.Clean, first)
+test "a carriage return split from its NUL decodes to a lone CR" {
+  // The encoder writes a lone CR as CR NUL; split it across blocks and the
+  // decoder must still produce the CR, not a CR plus a NUL.
+  let (state, first) = @tftp.netascii_decode(@tftp.Clean, bytes_from("a\r"))
   assert_eq(state, @tftp.LocalCr)
-  let (state2, decoded_second) = @tftp.netascii_decode(state, second)
+  assert_eq(text_from(first), "a")
+  let (state2, second) = @tftp.netascii_decode(
+    state,
+    Bytes::from_array([b'\x00', b'b']),
+  )
   assert_eq(state2, @tftp.Clean)
-  assert_eq(text_from(decoded_first + decoded_second), "tail\rhead")
+  assert_eq(first.length(), 1)
+  assert_eq(second[0], b'\r')
+  assert_eq(second[1], b'b')
 }
 
 ///|
-test "a cr held at the end of a stream decodes to a lone cr on finish" {
+test "a carriage return held at the end of the stream is a lone CR" {
+  // Nothing follows the block, so the held CR has no partner and is real.
   let (state, body) = @tftp.netascii_decode(@tftp.Clean, bytes_from("done\r"))
   assert_eq(state, @tftp.LocalCr)
   assert_eq(text_from(body), "done")
   assert_eq(text_from(@tftp.netascii_decode_finish(state, body)), "done\r")
+}
+
+///|
+test "every split point of a CRLF recovers the same line ending" {
+  // The regression this guards: a line ending landing on any block boundary
+  // must decode back to one newline, whatever the block size.
+  let wire = bytes_from("tail\r\nhead")
+  let whole = @tftp.netascii_decode_all(wire)
+  assert_eq(text_from(whole), "tail\nhead")
+  for split = 1; split < wire.length(); split = split + 1 {
+    let (state, first) = @tftp.netascii_decode(
+      @tftp.Clean,
+      wire.clamped_view(end=split).to_owned(),
+    )
+    let (state2, second) = @tftp.netascii_decode(
+      state,
+      wire.clamped_view(start=split).to_owned(),
+    )
+    // The decoder holds at most one CR, so a two-block split is exact, and
+    // the finish call is the identity here because nothing is left pending.
+    assert_eq(state2, @tftp.Clean)
+    assert_eq(text_from(first + second), text_from(whole))
+    assert_eq(@tftp.netascii_decode_finish(state2, first + second), whole)
+  }
 }
 
 ///|
@@ -144,6 +173,11 @@ test "a trailing carriage return on the wire is held until finish" {
   assert_eq(state, @tftp.LocalCr)
   assert_eq(text_from(body), "done")
   assert_eq(text_from(@tftp.netascii_decode_finish(state, body)), "done\r")
+  // Rebuilt through the stream close, since the decoder holds the CR back.
+  assert_eq(
+    text_from(@tftp.netascii_decode_all(bytes_from("done\r"))),
+    "done\r",
+  )
 }
 
 ///|

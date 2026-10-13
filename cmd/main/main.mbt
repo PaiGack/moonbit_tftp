@@ -287,7 +287,15 @@ async fn run(command : Command) -> Result[Unit, CliError] {
 async fn get(args : TransferArgs) -> Result[Unit, CliError] {
   let transport = @lib.SocketTransport::new(args.remote)
   defer transport.close()
-  match @lib.get(transport, args.remote, args.remote_file, args.options) {
+  let printer = ProgressPrinter::new(args.local_file)
+  match
+    @lib.get_with_progress(
+      transport,
+      args.remote,
+      args.remote_file,
+      args.options,
+      report => ignore(printer.report(report)),
+    ) {
     Ok(outcome) =>
       match outcome.received() {
         Some(payload) =>
@@ -315,18 +323,104 @@ async fn put(args : TransferArgs) -> Result[Unit, CliError] {
   }
   let transport = @lib.SocketTransport::new(args.remote)
   defer transport.close()
+  let printer = ProgressPrinter::new(args.remote_file)
   match
-    @lib.put(transport, args.remote, args.remote_file, payload, args.options) {
-    Ok(outcome) =>
-      match outcome.sent() {
-        Some(bytes) => {
-          println("sent \{bytes} bytes -> \{args.remote_file}")
-          Ok(())
-        }
-        None => Err(CliError("transfer reported no acknowledged bytes"))
+    @lib.put_with_progress(
+      transport,
+      args.remote,
+      args.remote_file,
+      payload,
+      args.options,
+      report => ignore(printer.report(report)),
+    ) {
+    Ok(outcome) => {
+      // Capacity check: the peer's `tsize` is the size it agreed to store.
+      // Anything but the acknowledged wire byte count means the transfer was
+      // cut short on the far side, which stop-and-wait cannot otherwise report.
+      let acknowledged = match outcome.sent() {
+        Some(bytes) => bytes
+        None => return Err(CliError("transfer reported no acknowledged bytes"))
       }
+      match check_capacity(outcome.tsize(), acknowledged, args) {
+        Ok(_) => ()
+        Err(error) => return Err(error)
+      }
+      println("sent \{acknowledged} bytes -> \{args.remote_file}")
+      Ok(())
+    }
     Err(error) => Err(describe_client_error(error))
   }
+}
+
+///|
+/// Confirms the transfer stored every byte the wire was given.
+///
+/// `tsize` is the size the WRQ announced on the wire (RFC 2349) and a server
+/// echoes it in the OACK once it has accepted the write, so a mismatch is the
+/// server saying it will take less than the whole file. The peer's number is
+/// therefore compared against the acknowledged wire size, never the local
+/// file's: a netascii `put` grows every `\n` to `\r\n` on the wire, so the
+/// two differ by design and comparing them would fail a perfectly good
+/// transfer. A peer that does not negotiate `tsize` is not an error — the
+/// option is optional — so `None` passes.
+fn check_capacity(
+  negotiated : Int32?,
+  sent : Int32,
+  args : TransferArgs,
+) -> Result[Unit, CliError] {
+  match negotiated {
+    Some(size) =>
+      if size == sent {
+        Ok(())
+      } else {
+        Err(
+          CliError(
+            "capacity check failed: \{args.remote_file} negotiated \{size} bytes but \{sent} were sent",
+          ),
+        )
+      }
+    None => Ok(())
+  }
+}
+
+///|
+/// Prints a progress line when a transfer's percentage moves far enough to be
+/// worth a line.
+///
+/// TFTP is stop-and-wait, so a per-block line would be one line per RTT and
+/// bury the terminal during a big transfer; reporting on whole-percent steps
+/// keeps the output readable while still showing that the transfer is moving.
+priv struct ProgressPrinter {
+  name : String
+  last_percent : Int32
+}
+
+///|
+fn ProgressPrinter::new(name : String) -> ProgressPrinter {
+  { name, last_percent: -1, }
+}
+
+///|
+fn ProgressPrinter::report(
+  self : ProgressPrinter,
+  progress : @lib.Progress,
+) -> ProgressPrinter {
+  if !progress.is_known() {
+    return self
+  }
+  let total = progress.total()
+  // A netascii `get` decodes as it goes, so `done` can edge past the wire
+  // `total`; the percent is clamped rather than allowed to print 103%.
+  let percent = if progress.done() >= total {
+    100
+  } else {
+    progress.done() * 100 / total
+  }
+  if percent == self.last_percent {
+    return self
+  }
+  println("\{self.name}: \{percent}% (\{progress.done()}/\{total} bytes)")
+  { name: self.name, last_percent: percent, }
 }
 
 ///|
@@ -367,6 +461,9 @@ async fn serve(args : ServeArgs) -> Result[Unit, CliError] {
                 run_session(tid, peer, packet, files, options) catch {
                   _ => ()
                 }
+                // Hand the slot back, or the dispatcher's ceiling would count
+                // finished sessions as running ones.
+                dispatcher.release()
               }
             }
             Err(_) => ()
@@ -375,18 +472,36 @@ async fn serve(args : ServeArgs) -> Result[Unit, CliError] {
           // A refused request still gets an answer on the client's own port:
           // ERROR 5 for a client on the wrong TID, ERROR 4 when the session
           // ceiling is full. The dispatcher already decided which.
-          try {
-            let socket = @lib.SocketSession::new(tid, peer)
-            socket.send(@lib.encode(@lib.to_error_packet(error)))
-            socket.close()
-          } catch {
-            _ => ()
-          }
+          reject_session(tid, peer, error.error_code(), error.message())
         @lib.Dispatch::Ignored => ()
       }
     }
   })
   Ok(())
+}
+
+///|
+/// Sends one ERROR packet from a fresh TID, for a request the accept loop
+/// refuses before a session exists (a client on the wrong TID, or a request
+/// past the session ceiling).
+///
+/// A socket that cannot be opened or written is not worth failing over: the
+/// peer is already being told "no", and a second failure is just the same
+/// silence with extra noise in the log.
+async fn reject_session(
+  tid : String,
+  peer : String,
+  code : @lib.ErrorCode,
+  message : String,
+) -> Unit {
+  try {
+    let socket = @lib.SocketSession::new(tid, peer)
+    let error = @lib.peer_error(code, message)
+    socket.send(@lib.encode(@lib.to_error_packet(error)))
+    socket.close()
+  } catch {
+    _ => ()
+  }
 }
 
 ///|

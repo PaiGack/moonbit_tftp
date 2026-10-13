@@ -258,6 +258,46 @@ fn Session::from_oack(request : ClientOptions, oack : Packet) -> Session {
 }
 
 ///|
+/// One progress report, handed to a caller's callback after every block.
+///
+/// `done` is the bytes delivered so far and `total` the size the peer
+/// announced; `total` is 0 when nothing is known yet (a `get` before the OACK,
+/// or a peer that did not negotiate `tsize`), so a caller must read it as
+/// "unknown", not as "empty".
+///
+/// The two are on the same scale for an `octet` transfer. A `netascii` transfer
+/// decodes as it goes, so `done` counts local bytes while `total` counts wire
+/// bytes; the pair is a good estimate, not an exact ratio.
+pub(all) struct Progress {
+  done : Int32
+  total : Int32
+} derive(Eq, Debug)
+
+///|
+pub extend Progress with Eq::{not_equal, equal}
+
+///|
+pub extend Progress with @moonbitlang/core/debug.Debug::{to_repr}
+
+///|
+/// Bytes transferred so far.
+pub fn Progress::done(self : Progress) -> Int32 {
+  self.done
+}
+
+///|
+/// The transfer's total size, or 0 when the peer has not said.
+pub fn Progress::total(self : Progress) -> Int32 {
+  self.total
+}
+
+///|
+/// Whether the size is known, so `total` is a real ceiling.
+pub fn Progress::is_known(self : Progress) -> Bool {
+  self.total > 0
+}
+
+///|
 /// The `get` half: request a file, receive DATA, acknowledge, finish on a short
 /// block.
 ///
@@ -268,6 +308,23 @@ pub async fn[T : Transport] get(
   remote : String,
   filename : String,
   request : ClientOptions,
+) -> Result[TransferOutcome, ClientError] {
+  get_with_progress(transport, remote, filename, request, _progress => ())
+}
+
+///|
+/// `get`, with a callback after every block so a caller can show progress.
+///
+/// The callback is a plain function rather than an interface: it is called
+/// synchronously between blocks, and the state machine does not care what it
+/// does with the numbers. `Progress::total` carries the `tsize` the peer
+/// announced, so a `get` can report a percentage once the OACK has arrived.
+pub async fn[T : Transport] get_with_progress(
+  transport : T,
+  remote : String,
+  filename : String,
+  request : ClientOptions,
+  on_progress : (Progress) -> Unit,
 ) -> Result[TransferOutcome, ClientError] {
   let rrq = Packet::Rrq(
     filename,
@@ -356,14 +413,22 @@ pub async fn[T : Transport] get(
               _ => payload
             }
             out = out + chunk
+            on_progress({
+              done: out.length(),
+              total: match session.tsize {
+                Some(size) => size
+                None => 0
+              },
+            })
             // A payload shorter than the negotiated block size ends the file
-            // (RFC 1350, section 1).
+            // (RFC 1350, section 1). A `\r` the decoder is still holding is a
+            // real lone CR by then, so it is flushed with the tail.
             if payload.length() < session.block_size {
-              let tail = match request.mode {
-                Netascii => netascii_decode_finish(netascii, Bytes::new(0))
-                _ => Bytes::new(0)
+              let out = match request.mode {
+                Netascii => netascii_decode_finish(netascii, out)
+                _ => out
               }
-              return Ok({ result: Received(out + tail), tsize: session.tsize, })
+              return Ok({ result: Received(out), tsize: session.tsize, })
             }
           }
           _ =>
@@ -388,6 +453,22 @@ pub async fn[T : Transport] put(
   filename : String,
   data : Bytes,
   request : ClientOptions,
+) -> Result[TransferOutcome, ClientError] {
+  put_with_progress(transport, remote, filename, data, request, _progress => ())
+}
+
+///|
+/// `put`, with a callback after every acknowledged block.
+///
+/// The total is the encoded size the WRQ announced as `tsize`, so a callback
+/// sees a real denominator from the first block even before the OACK arrives.
+pub async fn[T : Transport] put_with_progress(
+  transport : T,
+  remote : String,
+  filename : String,
+  data : Bytes,
+  request : ClientOptions,
+  on_progress : (Progress) -> Unit,
 ) -> Result[TransferOutcome, ClientError] {
   let encoded = match request.mode {
     Netascii => netascii_encode_all(data)
@@ -419,6 +500,7 @@ pub async fn[T : Transport] put(
       Ok(size) => {
         acknowledged = acknowledged + size
         index = index + 1
+        on_progress({ done: acknowledged, total: encoded.length(), })
       }
       Err(error) => return Err(error)
     }

@@ -216,10 +216,11 @@ pub fn RequestedOptions::is_empty(self : RequestedOptions) -> Bool {
 /// else means the peer expects us to accept a size that is not a request. That
 /// is the `Err` a server turns into ERROR 8.
 ///
-/// `tsize` is a whole file size, so unlike `blksize` it is not capped at
-/// `max_block_size`; a 100 MB file may well cross a single packet many times
-/// over. `max_tsize` is the only ceiling, and it is `Int32` arithmetic rather
-/// than anything the RFC asks for.
+/// `tsize` is a whole file size, so unlike `blksize` it is *not* bounded by the
+/// block-size ceiling the other options share: a 100 MB firmware image carries
+/// a `tsize` far past any single packet, and refusing it would break exactly
+/// the transfers the option exists for. `max_tsize` is the only ceiling, and it
+/// is `Int32` arithmetic rather than anything the RFC asks for.
 ///
 /// Note that `parse_decimal` does not check overflow, so a decimal wider than
 /// `Int32` wraps around before `max_tsize` ever sees it; the wrapped value is
@@ -259,6 +260,9 @@ pub fn parse_options(
           accepted.push(RequestedOption::new(kind, value))
         }
       Tsize =>
+        // Only the shape is checked, plus the Int32 arithmetic ceiling; never
+        // `max_block_size`, because the value is a file size unrelated to what
+        // one packet can hold.
         if value > max_tsize {
           continue
         } else if is_read {
