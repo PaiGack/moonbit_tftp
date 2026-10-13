@@ -287,7 +287,15 @@ async fn run(command : Command) -> Result[Unit, CliError] {
 async fn get(args : TransferArgs) -> Result[Unit, CliError] {
   let transport = @lib.SocketTransport::new(args.remote)
   defer transport.close()
-  match @lib.get(transport, args.remote, args.remote_file, args.options) {
+  let printer = ProgressPrinter::new(args.local_file)
+  match
+    @lib.get_with_progress(
+      transport,
+      args.remote,
+      args.remote_file,
+      args.options,
+      report => printer.report(report),
+    ) {
     Ok(outcome) =>
       match outcome.received() {
         Some(payload) =>
@@ -315,9 +323,24 @@ async fn put(args : TransferArgs) -> Result[Unit, CliError] {
   }
   let transport = @lib.SocketTransport::new(args.remote)
   defer transport.close()
+  let printer = ProgressPrinter::new(args.remote_file)
   match
-    @lib.put(transport, args.remote, args.remote_file, payload, args.options) {
-    Ok(outcome) =>
+    @lib.put_with_progress(
+      transport,
+      args.remote,
+      args.remote_file,
+      payload,
+      args.options,
+      report => printer.report(report),
+    ) {
+    Ok(outcome) => {
+      // Capacity check: the peer's `tsize` is the size it agreed to store.
+      // Anything but our own byte count means the transfer was cut short on
+      // the far side, which a stop-and-wait protocol cannot otherwise report.
+      match check_capacity(outcome.tsize(), payload.length(), args) {
+        Ok(_) => ()
+        Err(error) => return Err(error)
+      }
       match outcome.sent() {
         Some(bytes) => {
           println("sent \{bytes} bytes -> \{args.remote_file}")
@@ -325,8 +348,74 @@ async fn put(args : TransferArgs) -> Result[Unit, CliError] {
         }
         None => Err(CliError("transfer reported no acknowledged bytes"))
       }
+    }
     Err(error) => Err(describe_client_error(error))
   }
+}
+
+///|
+/// Confirms the transfer stored exactly what was handed over.
+///
+/// `tsize` is the number the WRQ announced (RFC 2349) and a server echoes it
+/// in the OACK once it has accepted the write, so a mismatch is the server
+/// saying it will take less than the whole file. A peer that does not
+/// negotiate `tsize` is not an error — the option is optional — so `None`
+/// passes.
+fn check_capacity(
+  negotiated : Int32?,
+  sent : Int32,
+  args : TransferArgs,
+) -> Result[Unit, CliError] {
+  match negotiated {
+    Some(size) =>
+      if size == sent {
+        Ok(())
+      } else {
+        Err(
+          CliError(
+            "capacity check failed: \{args.remote_file} negotiated \{size} bytes but \{sent} were sent",
+          ),
+        )
+      }
+    None => Ok(())
+  }
+}
+
+///|
+/// Prints a progress line when a transfer's percentage moves far enough to be
+/// worth a line.
+///
+/// TFTP is stop-and-wait, so a per-block line would be one line per RTT and
+/// bury the terminal during a big transfer; reporting on whole-percent steps
+/// keeps the output readable while still showing that the transfer is moving.
+priv struct ProgressPrinter {
+  name : String
+  last_percent : Int32
+} derive(Debug)
+
+///|
+fn ProgressPrinter::new(name : String) -> ProgressPrinter {
+  { name, last_percent: -1, }
+}
+
+///|
+fn ProgressPrinter::report(self : ProgressPrinter, progress : @lib.Progress) {
+  if !progress.is_known() {
+    return
+  }
+  let total = progress.total()
+  // A netascii `get` decodes as it goes, so `done` can edge past the wire
+  // `total`; the percent is clamped rather than allowed to print 103%.
+  let percent = if progress.done() >= total {
+    100
+  } else {
+    progress.done() * 100 / total
+  }
+  if percent == self.last_percent {
+    return
+  }
+  self.last_percent = percent
+  println("\{self.name}: \{percent}% (\{progress.done()}/\{total} bytes)")
 }
 
 ///|
@@ -367,6 +456,9 @@ async fn serve(args : ServeArgs) -> Result[Unit, CliError] {
                 run_session(tid, peer, packet, files, options) catch {
                   _ => ()
                 }
+                // Hand the slot back, or the dispatcher's ceiling would count
+                // finished sessions as running ones.
+                dispatcher.release()
               }
             }
             Err(_) => ()
@@ -374,22 +466,50 @@ async fn serve(args : ServeArgs) -> Result[Unit, CliError] {
         @lib.Dispatch::Rejected(tid) =>
           // A packet on the request port that is not a request is a client
           // using the wrong TID; ERROR 5 belongs on that client's own port.
-          try {
-            let socket = @lib.SocketSession::new(tid, peer)
-            let error = @lib.peer_error(
-              @lib.ErrorCode::UnknownTransferId,
-              "unknown transfer id",
-            )
-            socket.send(@lib.encode(@lib.to_error_packet(error)))
-            socket.close()
-          } catch {
-            _ => ()
-          }
+          reject_session(
+            tid,
+            peer,
+            @lib.ErrorCode::UnknownTransferId,
+            "unknown transfer id",
+          )
+        @lib.Dispatch::Busy(tid) =>
+          // A request past the session ceiling: ERROR 4 (illegal operation) is
+          // the honest code, since the request is well-formed but the server
+          // cannot take it right now. Running sessions are not disturbed.
+          reject_session(
+            tid,
+            peer,
+            @lib.ErrorCode::IllegalOperation,
+            "server busy",
+          )
         @lib.Dispatch::Ignored => ()
       }
     }
   })
   Ok(())
+}
+
+///|
+/// Sends one ERROR packet from a fresh TID, for a request the accept loop
+/// refuses before a session exists (wrong TID, or past the session ceiling).
+///
+/// A socket that cannot be opened or written is not worth failing over: the
+/// peer is already being told "no", and a second failure is just the same
+/// silence with extra noise in the log.
+fn reject_session(
+  tid : String,
+  peer : String,
+  code : @lib.ErrorCode,
+  message : String,
+) -> Unit {
+  try {
+    let socket = @lib.SocketSession::new(tid, peer)
+    let error = @lib.peer_error(code, message)
+    socket.send(@lib.encode(@lib.to_error_packet(error)))
+    socket.close()
+  } catch {
+    _ => ()
+  }
 }
 
 ///|

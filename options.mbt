@@ -206,6 +206,11 @@ pub fn RequestedOptions::is_empty(self : RequestedOptions) -> Bool {
 /// rather than a bound: a read request states the placeholder 0, and anything
 /// else means the peer expects us to accept a size that is not a request. That
 /// is the `Err` a server turns into ERROR 8.
+///
+/// `tsize` is a whole-file size, so it is *not* bounded by the block-size
+/// ceiling the other options share: a 100 MB firmware image carries a `tsize`
+/// far past any single packet, and refusing it would break exactly the
+/// transfers the option exists for.
 pub fn parse_options(
   request : Packet,
 ) -> Result[RequestedOptions, NegotiationError] {
@@ -240,11 +245,9 @@ pub fn parse_options(
           accepted.push(RequestedOption::new(kind, value))
         }
       Tsize =>
-        if value > max_block_size {
-          // A size no single TFTP packet could carry: the same 65464-byte
-          // ceiling the option field imposes on every other value.
-          continue
-        } else if is_read {
+        // Only the shape is checked, never a ceiling: the value is a file
+        // size, unrelated to what one packet can hold.
+        if is_read {
           if value == 0 {
             accepted.push(RequestedOption::new(kind, 0))
           } else {
@@ -434,7 +437,7 @@ pub fn resolve_options(
       Tsize => {
         let value = match answer {
           Some(text) =>
-            match parse_bounded(text, 0, max_block_size) {
+            match parse_decimal(text) {
               Some(value) => value
               None => return Err(BadTsize(text))
             }

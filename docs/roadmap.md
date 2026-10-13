@@ -45,10 +45,16 @@
 - [x] 真实 UDP 套接字上的客户端传输（`transport_socket.mbt`），并让服务端
       会话传输实现 `Transport`（`server_fs.mbt`），使 CLI 复用库的状态机
 - [x] 端到端示例与 README 补全（用法、平台支持矩阵）
-- [x] 覆盖率检查与边界用例补齐（`moon coverage analyze`）
+- [x] 覆盖率检查与边界用例补齐（`scripts/ci.sh` 用 `moon coverage report -f summary` 汇总，见下）
 - [x] 与 curl 的互操作对拍，并据此修复两个真实对端才暴露的问题
       （见 `docs/interop.md`）
 - [x] roadmap 里 M0~M5 的勾选框回填
+
+### 覆盖率
+
+CI 用 `moon coverage report -f summary` 打印汇总，不设门槛也不留
+`uncovered.log`：覆盖率是给人看的，不是卡构建的。当前合计
+`1168/1368`（`server_fs.mbt` 由 `server_fs_wbtest.mbt` 覆盖）。
 
 ## 待定
 

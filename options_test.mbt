@@ -281,12 +281,14 @@ test "a server answering with a non-numeric value is a rejection" {
 }
 
 ///|
-test "a server tsize past the blksize ceiling is a rejection" {
+test "a server tsize past the blksize ceiling is still a file size" {
+  // `tsize` is the whole file, not a packet: a value far past any single
+  // packet is exactly what a big firmware image negotiates, so it must be
+  // accepted rather than refused against the block-size ceiling.
   let parsed = @tftp.parse_options(request([("tsize", "0")])).unwrap()
-  assert_eq(
-    @tftp.resolve_options(parsed, _option => Ok(Some("70000"))),
-    Err(@tftp.NegotiationError::BadTsize("70000")),
-  )
+  let options = @tftp.resolve_options(parsed, _option => Ok(Some("104857600"))).unwrap()
+  assert_eq(options.tsize(), Some(104857600))
+  assert_eq(oack_values(options), ["104857600"])
 }
 
 // ---------------------------------------------------------------------------
@@ -372,12 +374,13 @@ test "a repeated option keeps its first occurrence (RFC 2347 says nothing)" {
 }
 
 ///|
-test "a tsize past the packet ceiling is dropped (RFC 2349 section 4)" {
+test "a tsize past the packet ceiling is kept (RFC 2349 section 4)" {
+  // The value is a file size, so the block-size ceiling has no say here.
   let parsed = @tftp.parse_options(
     request([("tsize", "65465"), ("timeout", "3")]),
   ).unwrap()
-  assert_eq(parsed.options().length(), 1)
-  assert_eq(parsed.options()[0].kind(), @tftp.OptionKind::Timeout)
+  assert_eq(parsed.tsize_hint(), Some(65465))
+  assert_eq(parsed.options().length(), 2)
 }
 
 ///|
@@ -387,4 +390,18 @@ test "a write request tsize at the ceiling survives" {
   ])
   let parsed = @tftp.parse_options(packet).unwrap()
   assert_eq(parsed.tsize_hint(), Some(65464))
+}
+
+///|
+test "a write request tsize for a large file is accepted" {
+  // 100 MB firmware: larger than any packet, still a legal file size.
+  let packet = @tftp.Packet::Wrq("firmware.bin", @tftp.Mode::Octet, [
+    @tftp.TftpOption::new("tsize", "104857600"),
+  ])
+  let parsed = @tftp.parse_options(packet).unwrap()
+  assert_eq(parsed.tsize_hint(), Some(104857600))
+  let options = @tftp.resolve_options(parsed, option => {
+    Ok(Some(option.request_value().to_string()))
+  }).unwrap()
+  assert_eq(options.tsize(), Some(104857600))
 }

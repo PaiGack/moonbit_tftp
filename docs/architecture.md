@@ -26,7 +26,10 @@ PaiGack/tftp
 ├── netascii_test.mbt        黑盒测试（转换与块边界）
 ├── tftp_wbtest.mbt          白盒测试（可访问内部实现）
 ├── server_fs_wbtest.mbt     白盒测试（真实文件系统 + socket 会话）
+├── transport_socket_wbtest.mbt  白盒测试（真实 UDP 套接字客户端传输）
 ├── cmd/main/                CLI 可执行入口
+│   ├── main.mbt             get / put / serve 子命令
+│   └── main_wbtest.mbt      白盒测试（CLI 参数解析）
 └── docs/                    设计文档
 ```
 

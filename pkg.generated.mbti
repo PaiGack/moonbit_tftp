@@ -25,6 +25,8 @@ pub fn encode(Packet) -> Bytes
 
 pub async fn[T : Transport] get(T, String, String, ClientOptions) -> Result[TransferOutcome, ClientError]
 
+pub async fn[T : Transport] get_with_progress(T, String, String, ClientOptions, (Progress) -> Unit) -> Result[TransferOutcome, ClientError]
+
 pub fn join_blocks(Array[Bytes]) -> Bytes
 
 pub let max_block_size : Int
@@ -62,6 +64,8 @@ pub fn peer_error(ErrorCode, String) -> ServerError
 pub async fn[T : FileSystem] plan_request(ServerOptions, T, Packet) -> Result[RequestAction, ServerError]
 
 pub async fn[T : Transport] put(T, String, String, Bytes, ClientOptions) -> Result[TransferOutcome, ClientError]
+
+pub async fn[T : Transport] put_with_progress(T, String, String, Bytes, ClientOptions, (Progress) -> Unit) -> Result[TransferOutcome, ClientError]
 
 pub fn resolve_options(RequestedOptions, (RequestedOption) -> Result[String?, NegotiationError]) -> Result[Options, NegotiationError]
 
@@ -166,6 +170,7 @@ pub fn DecodeError::to_repr(Self) -> @debug.Repr
 pub(all) enum Dispatch {
   Started(String)
   Rejected(String)
+  Busy(String)
   Ignored
 } derive(Eq, @debug.Debug)
 pub fn Dispatch::equal(Self, Self) -> Bool
@@ -178,6 +183,8 @@ pub struct Dispatcher[A] {
   max_sessions : Int
 } derive(@debug.Debug)
 pub fn[A] Dispatcher::new(A, Int) -> Self[A]
+pub fn[A] Dispatcher::active(Self[A]) -> Int
+pub fn[A] Dispatcher::release(Self[A]) -> Unit
 pub fn[A : TidAllocator] Dispatcher::route(Self[A], Datagram) -> Dispatch
 pub fn[A] Dispatcher::started(Self[A]) -> Int
 pub fn[A : @debug.Debug] Dispatcher::to_repr(Self[A]) -> @debug.Repr
@@ -341,6 +348,17 @@ pub(all) enum RequestAction {
 pub fn RequestAction::equal(Self, Self) -> Bool
 pub fn RequestAction::not_equal(Self, Self) -> Bool
 pub fn RequestAction::to_repr(Self) -> @debug.Repr
+
+pub struct Progress {
+  done : Int
+  total : Int
+} derive(Eq, @debug.Debug)
+pub fn Progress::done(Self) -> Int
+pub fn Progress::equal(Self, Self) -> Bool
+pub fn Progress::is_known(Self) -> Bool
+pub fn Progress::not_equal(Self, Self) -> Bool
+pub fn Progress::to_repr(Self) -> @debug.Repr
+pub fn Progress::total(Self) -> Int
 
 pub struct RequestedOption {
   kind : OptionKind

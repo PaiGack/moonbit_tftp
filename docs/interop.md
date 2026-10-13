@@ -1,6 +1,6 @@
 # 互操作对拍记录
 
-本页记录 `moon-tftp` 与外部 TFTP 实现的实测结果。对拍的意义在于：仓库内的
+本页记录 `moon run cmd/main --` 与外部 TFTP 实现的实测结果。对拍的意义在于：仓库内的
 测试替身只回答「我们希望对端怎么答」，而真实实现对协议的理解是独立写出来的，
 它能暴露测试替身容忍、而 RFC 不允许的偏差。
 
@@ -16,7 +16,7 @@ curl 的 TFTP 实现严格遵循 RFC 1350/2347，是很好的「外部裁判」�
 ## 方法
 
 1. 启动本项目的服务端，发布一个测试目录：
-   `moon-tftp serve --root /tmp/tftproot --port 6969 --allow-overwrite`
+   `moon run cmd/main -- serve --root /tmp/tftproot --port 6969 --allow-overwrite`
 2. 用 curl 读写该服务端，用 `cmp` 对比下载内容与源文件。
 3. 反向：用本项目的 `get` / `put` 读写真实端点，验证客户端侧。
 
