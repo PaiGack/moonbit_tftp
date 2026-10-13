@@ -934,6 +934,59 @@ async test "get decodes a netascii file back to local line endings" {
 }
 
 ///|
+async test "get restores a netascii line ending split across two blocks" {
+  // The regression from the issue: block one ends on the CR of a CRLF and
+  // block two opens on the LF, so no single block contains the escape. The
+  // client must join them into one newline rather than emit CR + LF.
+  let (client, server) = @tftp.MemoryTransport::pair("client:0", "server:69")
+  let text = "abcdefg\n"
+  let wire = @tftp.netascii_encode_all(netascii_test_bytes(text))
+  // "abcdefg\n" becomes "abcdefg\r\n": nine bytes over a block size of 8.
+  assert_eq(text.length(), 8)
+  assert_eq(netascii_test_text(wire), "abcdefg\r\n")
+  @async.with_task_group(group => {
+    group.spawn_bg(() => {
+      ignore(server.recv("client:0", 1000))
+      // The split a `--blksize 8` transfer produces: "abcdefg\r" + "\n".
+      server.send(
+        @tftp.encode(
+          @tftp.Packet::Data(1, wire.clamped_view(start=0, end=8).to_owned()),
+        ),
+        "client:0",
+      )
+      ignore(server.recv("client:0", 8000))
+      server.send(
+        @tftp.encode(
+          @tftp.Packet::Data(2, wire.clamped_view(start=8).to_owned()),
+        ),
+        "client:0",
+      )
+      ignore(server.recv("client:0", 8000))
+    })
+    let result = @tftp.get(
+      client,
+      "server:69",
+      "split.txt",
+      @tftp.ClientOptions::default()
+      .with_mode(@tftp.Netascii)
+      .with_block_size(8),
+    )
+    match result {
+      Ok(outcome) =>
+        match outcome.received() {
+          // Eight bytes: the CRLF arrives as one newline, not as CR + LF.
+          Some(bytes) => {
+            assert_eq(bytes.length(), 8)
+            assert_eq(netascii_test_text(bytes), text)
+          }
+          None => fail("expected received bytes")
+        }
+      Err(_) => fail("get failed on a split line ending")
+    }
+  })
+}
+
+///|
 async test "get reports an ERROR that arrives after the first block" {
   let (client, server) = @tftp.MemoryTransport::pair("client:0", "server:69")
   @async.with_task_group(group => {
