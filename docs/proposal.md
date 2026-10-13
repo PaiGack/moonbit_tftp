@@ -6,8 +6,8 @@
 ## 基本信息
 
 - 项目名称：MoonBit TFTP：纯 MoonBit 实现的 TFTP 客户端与服务端
-- 参赛者：rzhangsan
-- 联系方式：18774239077
+- 参赛者：Pai2s
+- 联系方式：GitHub @PaiGack
 - GitHub 仓库链接：<https://github.com/PaiGack/moonbit_tftp>
 - 包名：`PaiGack/tftp`（`moon add PaiGack/tftp`）
 - 项目方向：MoonBit 网络协议基础库 / 嵌入式与网络基础设施
