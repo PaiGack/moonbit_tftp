@@ -36,9 +36,16 @@ TFTP（Trivial File Transfer Protocol，简单文件传输协议）的纯 MoonBi
 
 ## 使用
 
-```moonbit
+```moonbit nocheck
 // 读一个文件；transport 由调用方注入（真实 socket 或内存实现）。
-let result = @tftp.get(transport, "127.0.0.1:69", "boot.img", @tftp.ClientOptions::default())
+
+///|
+let result = @tftp.get(
+  transport,
+  "127.0.0.1:69",
+  "boot.img",
+  @tftp.ClientOptions::default(),
+)
 ```
 
 ## 使用
