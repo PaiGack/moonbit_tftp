@@ -207,18 +207,18 @@ test "a progress line only prints when the percentage moves" {
   assert_eq(printer.last_percent, -1)
   // An unknown total (no tsize) is not reportable, and must leave the state
   // untouched so the first real percentage still prints.
-  printer.report(@lib.Progress::{ done: 10, total: 0, })
+  let printer = printer.report(@lib.Progress::{ done: 10, total: 0, })
   assert_eq(printer.last_percent, -1)
-  printer.report(@lib.Progress::{ done: 25, total: 100, })
+  let printer = printer.report(@lib.Progress::{ done: 25, total: 100, })
   assert_eq(printer.last_percent, 25)
   // Same percentage again: no second line.
-  printer.report(@lib.Progress::{ done: 25, total: 100, })
+  let printer = printer.report(@lib.Progress::{ done: 25, total: 100, })
   assert_eq(printer.last_percent, 25)
-  printer.report(@lib.Progress::{ done: 80, total: 100, })
+  let printer = printer.report(@lib.Progress::{ done: 80, total: 100, })
   assert_eq(printer.last_percent, 80)
   // A netascii decode can report more local bytes than the wire total; the
   // percentage is clamped so it can never print past 100.
-  printer.report(@lib.Progress::{ done: 120, total: 100, })
+  let printer = printer.report(@lib.Progress::{ done: 120, total: 100, })
   assert_eq(printer.last_percent, 100)
 }
 
@@ -229,4 +229,68 @@ test "error codes are spelled for humans" {
     error_code_text(@lib.ErrorCode::UnknownTransferId),
     "5 unknown transfer id",
   )
+}
+
+///|
+test "too many positionals is refused in both directions" {
+  // The `get` and `put` shapes differ in what a third positional means, so
+  // each has its own "too many" answer rather than one generic message.
+  match Command::parse("get", ["h:69", "a", "b", "c"]) {
+    Err(CliError(message)) => assert_true(message.contains("at most"))
+    _ => fail("expected a parse error")
+  }
+  match Command::parse("put", ["h:69", "a", "b", "c"]) {
+    Err(CliError(message)) => assert_true(message.contains("at most"))
+    _ => fail("expected a parse error")
+  }
+  // A single positional is one short in both directions, and the message
+  // names what is missing rather than repeating "at least".
+  match Command::parse("put", ["h:69"]) {
+    Err(CliError(message)) => assert_true(message.contains("local file name"))
+    _ => fail("expected a parse error")
+  }
+  match Command::parse("put", []) {
+    Err(CliError(message)) => assert_true(message.contains("at least"))
+    _ => fail("expected a parse error")
+  }
+  match Command::parse("get", ["h:69", "a", "b"]) {
+    Ok(Get(args)) => assert_eq(args.local_file, "b")
+    _ => fail("expected three positionals to be accepted")
+  }
+}
+
+///|
+test "serve refuses a missing value and a bad number for each numeric flag" {
+  // A flag at the end of the argument list has no value to take.
+  match Command::parse("serve", ["--root"]) {
+    Err(CliError(message)) => assert_true(message.contains("--root"))
+    _ => fail("expected a parse error")
+  }
+  match Command::parse("serve", ["--port", "http"]) {
+    Err(CliError(message)) => assert_true(message.contains("--port"))
+    _ => fail("expected a parse error")
+  }
+  match Command::parse("serve", ["--max-sessions", "0"]) {
+    Err(CliError(message)) => assert_true(message.contains("positive"))
+    _ => fail("expected a parse error")
+  }
+  match Command::parse("serve", ["--max-sessions", "many"]) {
+    Err(CliError(message)) => assert_true(message.contains("--max-sessions"))
+    _ => fail("expected a parse error")
+  }
+  // An unknown flag is refused rather than treated as a root path.
+  match Command::parse("serve", ["--turbo"]) {
+    Err(CliError(message)) => assert_true(message.contains("--turbo"))
+    _ => fail("expected a parse error")
+  }
+}
+
+///|
+test "a bare `-v` is a version request, not a transfer flag" {
+  // `-v` and `--version` are the same request spelled two ways; the parser
+  // only sees the subcommand, so the flag form is what `main` checks.
+  match Command::parse("-v", []) {
+    Err(CliError(message)) => assert_true(message.contains("-v"))
+    _ => fail("expected a parse error")
+  }
 }

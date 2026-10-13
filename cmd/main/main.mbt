@@ -294,7 +294,7 @@ async fn get(args : TransferArgs) -> Result[Unit, CliError] {
       args.remote,
       args.remote_file,
       args.options,
-      report => printer.report(report),
+      report => ignore(printer.report(report)),
     ) {
     Ok(outcome) =>
       match outcome.received() {
@@ -331,36 +331,38 @@ async fn put(args : TransferArgs) -> Result[Unit, CliError] {
       args.remote_file,
       payload,
       args.options,
-      report => printer.report(report),
+      report => ignore(printer.report(report)),
     ) {
     Ok(outcome) => {
       // Capacity check: the peer's `tsize` is the size it agreed to store.
-      // Anything but our own byte count means the transfer was cut short on
-      // the far side, which a stop-and-wait protocol cannot otherwise report.
-      match check_capacity(outcome.tsize(), payload.length(), args) {
+      // Anything but the acknowledged wire byte count means the transfer was
+      // cut short on the far side, which stop-and-wait cannot otherwise report.
+      let acknowledged = match outcome.sent() {
+        Some(bytes) => bytes
+        None => return Err(CliError("transfer reported no acknowledged bytes"))
+      }
+      match check_capacity(outcome.tsize(), acknowledged, args) {
         Ok(_) => ()
         Err(error) => return Err(error)
       }
-      match outcome.sent() {
-        Some(bytes) => {
-          println("sent \{bytes} bytes -> \{args.remote_file}")
-          Ok(())
-        }
-        None => Err(CliError("transfer reported no acknowledged bytes"))
-      }
+      println("sent \{acknowledged} bytes -> \{args.remote_file}")
+      Ok(())
     }
     Err(error) => Err(describe_client_error(error))
   }
 }
 
 ///|
-/// Confirms the transfer stored exactly what was handed over.
+/// Confirms the transfer stored every byte the wire was given.
 ///
-/// `tsize` is the number the WRQ announced (RFC 2349) and a server echoes it
-/// in the OACK once it has accepted the write, so a mismatch is the server
-/// saying it will take less than the whole file. A peer that does not
-/// negotiate `tsize` is not an error — the option is optional — so `None`
-/// passes.
+/// `tsize` is the size the WRQ announced on the wire (RFC 2349) and a server
+/// echoes it in the OACK once it has accepted the write, so a mismatch is the
+/// server saying it will take less than the whole file. The peer's number is
+/// therefore compared against the acknowledged wire size, never the local
+/// file's: a netascii `put` grows every `\n` to `\r\n` on the wire, so the
+/// two differ by design and comparing them would fail a perfectly good
+/// transfer. A peer that does not negotiate `tsize` is not an error — the
+/// option is optional — so `None` passes.
 fn check_capacity(
   negotiated : Int32?,
   sent : Int32,
@@ -391,7 +393,7 @@ fn check_capacity(
 priv struct ProgressPrinter {
   name : String
   last_percent : Int32
-} derive(Debug)
+}
 
 ///|
 fn ProgressPrinter::new(name : String) -> ProgressPrinter {
@@ -399,9 +401,12 @@ fn ProgressPrinter::new(name : String) -> ProgressPrinter {
 }
 
 ///|
-fn ProgressPrinter::report(self : ProgressPrinter, progress : @lib.Progress) {
+fn ProgressPrinter::report(
+  self : ProgressPrinter,
+  progress : @lib.Progress,
+) -> ProgressPrinter {
   if !progress.is_known() {
-    return
+    return self
   }
   let total = progress.total()
   // A netascii `get` decodes as it goes, so `done` can edge past the wire
@@ -412,10 +417,10 @@ fn ProgressPrinter::report(self : ProgressPrinter, progress : @lib.Progress) {
     progress.done() * 100 / total
   }
   if percent == self.last_percent {
-    return
+    return self
   }
-  self.last_percent = percent
   println("\{self.name}: \{percent}% (\{progress.done()}/\{total} bytes)")
+  { name: self.name, last_percent: percent, }
 }
 
 ///|
@@ -467,12 +472,7 @@ async fn serve(args : ServeArgs) -> Result[Unit, CliError] {
           // A refused request still gets an answer on the client's own port:
           // ERROR 5 for a client on the wrong TID, ERROR 4 when the session
           // ceiling is full. The dispatcher already decided which.
-          reject_session(
-            tid,
-            peer,
-            error.error_code(),
-            error.message(),
-          )
+          reject_session(tid, peer, error.error_code(), error.message())
         @lib.Dispatch::Ignored => ()
       }
     }
@@ -488,7 +488,7 @@ async fn serve(args : ServeArgs) -> Result[Unit, CliError] {
 /// A socket that cannot be opened or written is not worth failing over: the
 /// peer is already being told "no", and a second failure is just the same
 /// silence with extra noise in the log.
-fn reject_session(
+async fn reject_session(
   tid : String,
   peer : String,
   code : @lib.ErrorCode,

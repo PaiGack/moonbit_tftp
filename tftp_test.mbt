@@ -338,3 +338,67 @@ test "OACK with a dangling option value is reported" {
     Err(@tftp.DecodeError::MissingTerminator),
   )
 }
+
+///|
+test "every accessor answers None for the packet shapes it does not name" {
+  // `block_number` is the accessor the state machines use to move a transfer
+  // along, so it must not invent a number for a packet that carries none: a
+  // request or an ERROR has no block to act on.
+  assert_eq(@tftp.Packet::Rrq("f", @tftp.Octet, []).block_number(), None)
+  assert_eq(@tftp.Packet::Wrq("f", @tftp.Octet, []).block_number(), None)
+  assert_eq(@tftp.Packet::Oack([]).block_number(), None)
+  assert_eq(
+    @tftp.Packet::Error(@tftp.FileNotFound, "gone").block_number(),
+    None,
+  )
+  assert_eq(@tftp.Packet::Data(7, b"x").block_number(), Some(7))
+  assert_eq(@tftp.Packet::Ack(7).block_number(), Some(7))
+}
+
+///|
+test "a `mail` mode never reaches the wire" {
+  // RFC 1350 keeps `mail` in the enum, but nothing a peer can send should
+  // reach it: `mode_of` is the only door into `Mode` on the wire, and `mail`
+  // is refused there. Asserting the refusal is what keeps `Mode::name`'s
+  // fourth arm unreachable in practice rather than merely untested.
+  assert_eq(
+    @tftp.decode(wire([0x00, 0x01, b'f', 0x00, b'm', b'a', b'i', b'l', 0x00])),
+    Err(@tftp.DecodeError::Unsupported("mail")),
+  )
+  // A misspelt mode is refused the same way, so `mail` is not special-cased
+  // into acceptance by a typo.
+  assert_eq(
+    @tftp.decode(
+      wire([
+        0x00, 0x01, b'f', 0x00, b'N', b'e', b't', b'a', b's', b'c', b'i', b'i', 0x00,
+      ]),
+    ),
+    Err(@tftp.DecodeError::Unsupported("Netascii")),
+  )
+}
+
+///|
+test "an encode that needs more than one doubling still fits" {
+  // `Writer::reserve` grows in doublings, so a write that needs more than
+  // twice the current buffer has to loop. A filename long enough to do that
+  // still has to come back out of `decode` byte for byte.
+  let mut filename = ""
+  for _ in 0..<20 {
+    filename += "abcdefgh"
+  }
+  let packet = @tftp.Packet::Rrq(filename, @tftp.Mode::Octet, [
+    @tftp.TftpOption::new("blksize", "1024"),
+  ])
+  assert_eq(@tftp.decode(@tftp.encode(packet)), Ok(packet))
+}
+
+///|
+test "an accessor that names no packet returns None for every shape" {
+  // `data_payload`, `mode`, `options` and `first_packet` are the other half of
+  // the accessor surface: each has to answer `None` rather than guess when the
+  // packet it was handed is not one it describes.
+  assert_eq(@tftp.Packet::Ack(1).data_payload(), None)
+  assert_eq(@tftp.Packet::Data(1, b"x").mode(), None)
+  assert_eq(@tftp.Packet::Ack(1).options(), None)
+  assert_eq(@tftp.Packet::Rrq("f", @tftp.Octet, []).data_payload(), None)
+}

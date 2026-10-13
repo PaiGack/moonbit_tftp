@@ -77,7 +77,7 @@ MoonBit 以目录为包，`moon.pkg` 声明该包依赖；测试按 `_test.mbt`�
 
 ## 依赖
 
-UDP 收发基于社区 socket 抽象 `mizchi/x/socket`（底层为 `moonbitlang/async`），
+UDP 收发基于 `moonbitlang/async` 的 `socket` 包（自带 native / wasm FFI），
 不自行编写底层绑定。客户端与状态机不直接依赖它：`transport.mbt` 只定义一个
 最小的 `Transport` trait，socket 实现是它的一个后端，测试注入内存实现
 （`transport_memory.mbt`）。这也让「协议层 / 状态机不碰 socket」这条原则

@@ -521,6 +521,89 @@ priv struct Handshake {
   /// section 4: the client acknowledges an OACK with ACK 0, and only then does
   /// the server start sending DATA.
   oack_pending : Bool
+  /// Whether the peer answered the request at all, for the retry budget.
+  answered : Bool
+}
+
+///|
+/// The wait for the first answer to a RRQ: one packet read, plus the decision
+/// on whether to re-ask.
+///
+/// The transport and the packet are test seams. A timeout and a stray packet
+/// both end in the same decision — re-ask, or give up once the budget is spent
+/// — and neither is reachable from a test that only drives a well-behaved
+/// peer, so the decision is exposed here and driven directly.
+priv struct AwaitOptions {
+  transport : &Transport
+  remote : String
+  request : ClientOptions
+  request_packet : Bytes
+}
+
+///|
+fn AwaitOptions::new(
+  transport : &Transport,
+  remote : String,
+  request : ClientOptions,
+  request_packet : Bytes,
+) -> AwaitOptions {
+  { transport, remote, request, request_packet, }
+}
+
+///|
+async fn AwaitOptions::handshake(
+  self : AwaitOptions,
+) -> Result[Handshake, ClientError] {
+  while true {
+    match
+      self.transport.recv(
+        self.remote,
+        timeout_to_ms(self.request.timeout_seconds),
+      ) {
+      Recv::Timeout => {
+        // The first DATA is what a read is waiting on, so there is no ACK to
+        // resend yet: a lost first DATA is answered by asking again.
+        self.transport.send(self.request_packet, self.remote)
+        return Ok({
+          session: Session::plain(self.request),
+          first_data: None,
+          oack_pending: false,
+          answered: false,
+        })
+      }
+      Recv::Packet(datagram) =>
+        match decode(datagram.payload()) {
+          Err(_) =>
+            // Malformed: the peer will retransmit, so keep reading.
+            continue
+          Ok(packet) =>
+            match packet {
+              Error(code, message) => return Err(PeerError(code, message))
+              Oack(_) =>
+                return Ok({
+                  session: Session::from_oack(self.request, packet),
+                  first_data: None,
+                  oack_pending: true,
+                  answered: true,
+                })
+              // No OACK: the peer ignored the options and went straight to
+              // RFC 1350, so the request's own values stand.
+              Data(block, payload) =>
+                return Ok({
+                  session: Session::plain(self.request),
+                  first_data: Some((block, payload)),
+                  oack_pending: false,
+                  answered: true,
+                })
+              _ =>
+                // Something else on the wire. Not an answer, so the budget
+                // is not spent on it either.
+                continue
+            }
+        }
+    }
+  }
+  Err(Timeout)
 }
 
 ///|
@@ -529,45 +612,29 @@ priv struct Handshake {
 /// `request_packet` is the RRQ to repeat on a timeout, so a lost first DATA
 /// makes the client re-ask instead of stalling until the budget runs out. That
 /// repeat is what a real client does: for a read there is no ACK to resend yet.
+///
+/// A packet that is neither an answer nor a duplicate of one is skipped
+/// without spending the budget: a read is driven by the server, so waiting is
+/// the honest response to noise on the wire.
 async fn[T : Transport] await_options(
   transport : T,
   remote : String,
   request : ClientOptions,
   request_packet : Bytes,
 ) -> Result[Handshake, ClientError] {
+  let waiting = AwaitOptions::new(transport, remote, request, request_packet)
   let mut retries = 0
   while retries <= request.max_retries {
-    match transport.recv(remote, timeout_to_ms(request.timeout_seconds)) {
-      Recv::Timeout => {
-        retries = retries + 1
-        if retries <= request.max_retries {
-          transport.send(request_packet, remote)
-        }
-      }
-      Recv::Packet(datagram) =>
-        match decode(datagram.payload()) {
-          Err(_) => retries = retries + 1
-          Ok(packet) =>
-            match packet {
-              Error(code, message) => return Err(PeerError(code, message))
-              Oack(_) =>
-                return Ok({
-                  session: Session::from_oack(request, packet),
-                  first_data: None,
-                  oack_pending: true,
-                })
-              // No OACK: the peer ignored the options and went straight to
-              // RFC 1350, so the request's own values stand.
-              Data(block, payload) =>
-                return Ok({
-                  session: Session::plain(request),
-                  first_data: Some((block, payload)),
-                  oack_pending: false,
-                })
-              _ => retries = retries + 1
-            }
-        }
+    let handshake = match waiting.handshake() {
+      Ok(handshake) => handshake
+      Err(error) => return Err(error)
     }
+    if handshake.answered {
+      return Ok(handshake)
+    }
+    // The wait ended in a repeated request: the peer was silent, so stay on
+    // the same budget rather than re-asking twice for one lost packet.
+    retries = retries + 1
   }
   Err(Timeout)
 }

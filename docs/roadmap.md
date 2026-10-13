@@ -45,16 +45,49 @@
 - [x] 真实 UDP 套接字上的客户端传输（`transport_socket.mbt`），并让服务端
       会话传输实现 `Transport`（`server_fs.mbt`），使 CLI 复用库的状态机
 - [x] 端到端示例与 README 补全（用法、平台支持矩阵）
-- [x] 覆盖率检查与边界用例补齐（`scripts/ci.sh` 用 `moon coverage report -f summary` 汇总，见下）
+- [x] 覆盖率检查与边界用例补齐（`scripts/ci.sh` 用 `moon coverage report -f summary` 汇总，
+      再跑 `moon coverage analyze` 把未覆盖行写进 `_build/uncovered.log`，见下）
 - [x] 与 curl 的互操作对拍，并据此修复两个真实对端才暴露的问题
       （见 `docs/interop.md`）
 - [x] roadmap 里 M0~M5 的勾选框回填
 
-### 覆盖率
+## 覆盖率现状
 
-CI 用 `moon coverage report -f summary` 打印汇总，不设门槛也不留
-`uncovered.log`：覆盖率是给人看的，不是卡构建的。当前合计
-`1168/1368`（`server_fs.mbt` 由 `server_fs_wbtest.mbt` 覆盖）。
+`moon coverage report -f summary` 给汇总数字，但它按「已编译 + 已覆盖 / 已编译」算：
+没被任何测试加载过的文件会被整份漏掉。`moon coverage analyze` 才给出未覆盖行名单。
+所以 `scripts/ci.sh` 两步都跑：`report` 给数字，`analyze` 给名单
+（写进 `_build/uncovered.log`）。
+
+当前 `1271/1441`，未覆盖 56 行，分布如下：
+
+| 文件 | 未覆盖 |
+| --- | --- |
+| `cmd/main/main.mbt` | 46 |
+| `client.mbt` | 2 |
+| `server.mbt` | 2 |
+| `tftp.mbt` | 2 |
+| `transport_socket.mbt` | 2 |
+| `options.mbt` | 1 |
+| `transport_memory.mbt` | 1 |
+| `server_fs.mbt` | 0 |
+
+剩下的基本都是只能由运行时环境或进程本身触发的：
+
+- `cmd/main/main.mbt`：`main` / `run` / `get` / `put` / `serve` / `read_local` /
+  `write_local` / `print_usage` 等 IO 胶水。要真正覆盖得让测试自己 `spawn` 一次
+  `main.exe`；当前由 `scripts/ci.sh` 里的 CLI 演示跑真实二进制来兜底，本地只测纯逻辑的
+  解析器与 `check_capacity` / `ProgressPrinter`。
+- `client.mbt`：`Session::from_oack` 里 `oack.options()` 为空的兜底分支（OACK 一定有
+  options，这一支只是防御），以及剩余读取路径的收尾。
+- `server.mbt`：同一个文件在 plan 与 read/write 之间消失的竞态分支。
+- `tftp.mbt`：`Mail` 的线格式名（`mode_of` 拒绝 `mail`，这一支只对内部构造的包可达）、
+  以及 `Writer::reserve` 里需要一次以上指数扩容才会走到的循环。
+- `options.mbt`：解析循环里的一个防御分支。
+- `transport_*.mbt`：`local_peer` 的少数实现细节、`SocketTransport::read_expected`
+  里 `nobreak` 的不可达兜底。
+
+门槛（比如「覆盖率不得低于 N%」）暂不设置：本仓库能在 CI 里跑的测试集里，有相当一部分
+行为只能靠 `scripts/ci.sh` 里的真实进程对拍，单看行覆盖率容易逼出为了数字而写的测试。
 
 ## 待定
 

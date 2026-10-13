@@ -326,3 +326,12 @@ async test "a socket session is a transport whose peer is fixed" {
     Recv::Timeout => fail("expected the datagram to arrive")
   }
 }
+
+///|
+/// A session socket reports the TID it is bound to, which is what a server
+/// logs and what a client uses to answer a session.
+async test "a socket session reports its own TID" {
+  let session = SocketSession::new(free_port(), "127.0.0.1:69")
+  defer session.close()
+  assert_eq(session.local_peer(), session.tid())
+}

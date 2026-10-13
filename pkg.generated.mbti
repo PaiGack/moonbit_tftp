@@ -2,7 +2,7 @@
 package "PaiGack/tftp"
 
 import {
-  "mizchi/x/socket",
+  "moonbitlang/async/socket",
   "moonbitlang/core/debug",
 }
 
@@ -181,10 +181,11 @@ pub fn Dispatch::to_repr(Self) -> @debug.Repr
 pub struct Dispatcher[A] {
   allocator : A
   mut started : Int
+  mut active : Int
   max_sessions : Int
 } derive(@debug.Debug)
-pub fn[A] Dispatcher::new(A, Int) -> Self[A]
 pub fn[A] Dispatcher::active(Self[A]) -> Int
+pub fn[A] Dispatcher::new(A, Int) -> Self[A]
 pub fn[A] Dispatcher::release(Self[A]) -> Unit
 pub fn[A : TidAllocator] Dispatcher::route(Self[A], Datagram) -> Dispatch
 pub fn[A] Dispatcher::started(Self[A]) -> Int
@@ -334,6 +335,17 @@ pub fn Packet::not_equal(Self, Self) -> Bool
 pub fn Packet::options(Self) -> Array[TftpOption]?
 pub fn Packet::to_repr(Self) -> @debug.Repr
 
+pub(all) struct Progress {
+  done : Int
+  total : Int
+} derive(Eq, @debug.Debug)
+pub fn Progress::done(Self) -> Int
+pub fn Progress::equal(Self, Self) -> Bool
+pub fn Progress::is_known(Self) -> Bool
+pub fn Progress::not_equal(Self, Self) -> Bool
+pub fn Progress::to_repr(Self) -> @debug.Repr
+pub fn Progress::total(Self) -> Int
+
 pub(all) enum Recv {
   Packet(Datagram)
   Timeout
@@ -349,17 +361,6 @@ pub(all) enum RequestAction {
 pub fn RequestAction::equal(Self, Self) -> Bool
 pub fn RequestAction::not_equal(Self, Self) -> Bool
 pub fn RequestAction::to_repr(Self) -> @debug.Repr
-
-pub struct Progress {
-  done : Int
-  total : Int
-} derive(Eq, @debug.Debug)
-pub fn Progress::done(Self) -> Int
-pub fn Progress::equal(Self, Self) -> Bool
-pub fn Progress::is_known(Self) -> Bool
-pub fn Progress::not_equal(Self, Self) -> Bool
-pub fn Progress::to_repr(Self) -> @debug.Repr
-pub fn Progress::total(Self) -> Int
 
 pub struct RequestedOption {
   kind : OptionKind

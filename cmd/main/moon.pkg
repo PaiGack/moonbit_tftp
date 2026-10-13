@@ -3,8 +3,8 @@ import {
   "moonbitlang/core/env",
   "moonbitlang/core/encoding/utf8",
   "moonbitlang/async",
-  "mizchi/x/fs",
-  "mizchi/x/socket",
+  "moonbitlang/async/fs",
+  "moonbitlang/async/socket",
 }
 
 pkgtype(kind: "executable")
