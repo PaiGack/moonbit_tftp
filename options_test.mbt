@@ -231,6 +231,67 @@ test "non-numeric option values are dropped" {
 }
 
 ///|
+test "a decimal past Int32 is rejected instead of wrapping" {
+  // `2147483648` is `Int32::max + 1`: accumulated blindly it wraps to
+  // -2147483648, a negative number that every later bound would mistake for a
+  // legal-looking value. `parse_decimal` refuses it before the multiply.
+  assert_eq(
+    @tftp.parse_options(request([("tsize", "0")])).unwrap().tsize_hint(),
+    None,
+  )
+  let wrapping = @tftp.Packet::Wrq("upload.bin", @tftp.Mode::Octet, [
+    @tftp.TftpOption::new("tsize", "2147483648"),
+  ])
+  let parsed = @tftp.parse_options(wrapping).unwrap()
+  assert_true(parsed.is_empty())
+  assert_eq(parsed.tsize_hint(), None)
+}
+
+///|
+test "a read request tsize past the Int32 ceiling is dropped, not negative" {
+  // 2147483648 used to wrap to -2147483648 and trip the shape check by
+  // accident, so the request read as ERROR 8 for the wrong reason — and a WRQ
+  // with the same decimal kept the negative value as a hint. With the ceiling
+  // applied during parsing the option is simply out of range, which RFC 2347
+  // section 2 turns into "ignore this option": the request still succeeds with
+  // nothing negotiated, rather than failing on a two's-complement artifact.
+  let parsed : @tftp.RequestedOptions = @tftp.parse_options(
+    request([("tsize", "2147483648")]),
+  ).unwrap()
+  assert_eq(parsed.tsize_hint(), None)
+  assert_true(parsed.is_empty())
+}
+
+///|
+test "leading zeros do not hide an over-wide decimal" {
+  // The guard compares against the accumulated value, so `000...0123` is still
+  // read as 123 and a value whose *digits* exceed the ceiling is refused even
+  // when an early zero would have kept the running total small.
+  let padded = @tftp.parse_options(
+    request([("blksize", "000000000000000000000000001024")]),
+  ).unwrap()
+  assert_eq(padded.options().length(), 1)
+  assert_eq(padded.options()[0].request_value(), 1024)
+  let too_big = @tftp.parse_options(
+    request([("timeout", "000000000000000000000000000256")]),
+  ).unwrap()
+  assert_true(too_big.is_empty())
+}
+
+///|
+test "blksize and timeout past their range are dropped, not wrapped" {
+  // The ceilings differ per option (`65464` for blksize, `255` for timeout),
+  // so each is parsed against its own: a decimal that fits `Int32` but not the
+  // option is still refused, and one that fits neither cannot wrap in.
+  for text in ["2147483647", "2147483648", "99999999999999999999"] {
+    let large = @tftp.parse_options(request([("blksize", text)])).unwrap()
+    assert_true(large.is_empty())
+    let timeout = @tftp.parse_options(request([("timeout", text)])).unwrap()
+    assert_true(timeout.is_empty())
+  }
+}
+
+///|
 test "one bad value does not take its peers down (RFC 2347 section 2)" {
   let parsed = @tftp.parse_options(
     request([("blksize", "0"), ("timeout", "2"), ("tsize", "junk")]),

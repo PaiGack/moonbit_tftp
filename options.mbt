@@ -97,19 +97,38 @@ pub let max_timeout : Int32 = 255
 pub let default_timeout : Int32 = 5
 
 ///|
-/// Parses the decimal text of a non-negative integer.
+/// Parses the decimal text of a non-negative `Int32`, refusing anything above
+/// `ceiling`.
 ///
 /// The RFCs spell option values as plain decimal ASCII, so `+1`, `-1`, ` 1`
 /// and the empty string are rejected instead of being quietly accepted by a
-/// general purpose integer parser.
-fn parse_decimal(text : String) -> Int32? {
-  if text.is_empty() {
+/// general purpose integer parser. So is any value above `ceiling`: the check
+/// runs before each digit is accumulated, so a decimal like `2147483648`
+/// cannot wrap around into a legal-looking negative one.
+///
+/// `ceiling` is the caller's own bound, not `Int32::max`: every option this
+/// module implements has a tighter one, and the earliest bound a value can be
+/// held to is the one that keeps the result meaningful.
+fn parse_decimal(text : String, ceiling : Int32) -> Int32? {
+  if text.is_empty() || ceiling < 0 {
     return None
   }
   let mut value = 0
   for char in text {
     let digit = char.to_int() - '0'.to_int()
     if digit < 0 || digit > 9 {
+      return None
+    }
+    // Reject before multiplying: `value * 10 + digit` would silently wrap on
+    // the digit that crosses `ceiling`, and a wrapped value is worse than a
+    // rejected one — it looks like an ordinary small number downstream.
+    //
+    // `value` is always <= `ceiling` here, so if `digit` is the larger of the
+    // two the ceiling is below 10 and only a leading digit can still fit; the
+    // comparison below would then be `value > <negative>`, always false for
+    // the `value == 0` it needs to be true for. Testing the digit first keeps
+    // the guard correct for a ceiling narrower than one decimal digit.
+    if digit > ceiling || value > (ceiling - digit) / 10 {
       return None
     }
     value = value * 10 + digit
@@ -222,10 +241,9 @@ pub fn RequestedOptions::is_empty(self : RequestedOptions) -> Bool {
 /// the transfers the option exists for. `max_tsize` is the only ceiling, and it
 /// is `Int32` arithmetic rather than anything the RFC asks for.
 ///
-/// Note that `parse_decimal` does not check overflow, so a decimal wider than
-/// `Int32` wraps around before `max_tsize` ever sees it; the wrapped value is
-/// what gets kept. Such a request is outside the range the protocol cares
-/// about, so it is not worth a special case.
+/// A decimal wider than `max_tsize` is rejected at parse time rather than
+/// wrapped: `parse_decimal` is given the ceiling, so `2147483648` cannot come
+/// back as a negative `tsize` that looks legal to everyone downstream.
 pub fn parse_options(
   request : Packet,
 ) -> Result[RequestedOptions, NegotiationError] {
@@ -246,9 +264,19 @@ pub fn parse_options(
       // the result deterministic instead of last-one-wins by accident.
       continue
     }
-    let value = match parse_decimal(option.value()) {
+    // Each option is parsed against its own ceiling, so a value that would
+    // overflow `Int32` is dropped here instead of surfacing as a legal-looking
+    // number: `tsize` holds a whole file size, the other two a packet or a
+    // timeout, and none of them has a reason to accept a decimal wider than
+    // `Int32` even before the RFC bounds below are applied.
+    let ceiling = match kind {
+      Blksize => max_block_size
+      Timeout => max_timeout
+      Tsize => max_tsize
+    }
+    let value = match parse_decimal(option.value(), ceiling) {
       Some(value) => value
-      None => continue // Malformed value: drop the option, keep its peers.
+      None => continue // Malformed or out-of-range value: drop this option.
     }
     match kind {
       Blksize =>
@@ -260,12 +288,10 @@ pub fn parse_options(
           accepted.push(RequestedOption::new(kind, value))
         }
       Tsize =>
-        // Only the shape is checked, plus the Int32 arithmetic ceiling; never
-        // `max_block_size`, because the value is a file size unrelated to what
-        // one packet can hold.
-        if value > max_tsize {
-          continue
-        } else if is_read {
+        // Only the shape is checked: the value is a file size unrelated to what
+        // one packet can hold, so `max_block_size` never applies, and the
+        // `Int32` ceiling was already enforced by `parse_decimal`.
+        if is_read {
           if value == 0 {
             accepted.push(RequestedOption::new(kind, 0))
           } else {
@@ -477,16 +503,15 @@ pub fn resolve_options(
 }
 
 ///|
-/// `parse_decimal` restricted to a range, so a huge value cannot wrap around
-/// into a legal-looking one.
+/// `parse_decimal` restricted to a range.
+///
+/// `parse_decimal` itself already refuses anything the multiplication would
+/// overflow, so this is only the *lower* bound plus the RFC's own ceiling:
+/// `max_value` is passed down as the parse ceiling so an over-wide decimal is
+/// rejected before it can wrap.
 fn parse_bounded(text : String, min_value : Int32, max_value : Int32) -> Int32? {
-  match parse_decimal(text) {
-    Some(value) =>
-      if value >= min_value && value <= max_value {
-        Some(value)
-      } else {
-        None
-      }
+  match parse_decimal(text, max_value) {
+    Some(value) => if value >= min_value { Some(value) } else { None }
     None => None
   }
 }
