@@ -30,14 +30,37 @@ pub fn HostFileSystem::new() -> HostFileSystem {
 ///
 /// A host that is out of space is rare in a test but real in the field, so it
 /// gets its own code (ERROR 3) rather than being lumped into "access denied".
-/// Anything else is read as "we cannot give you this file", which is what
-/// ERROR 1 means.
+///
+/// A path that names a directory is a refusal of exactly the kind ERROR 2
+/// means (RFC 1350, section 5), and the platforms word that refusal
+/// differently: Linux answers `Is a directory`, some builds a bare `EISDIR`,
+/// and a directory whose child cannot be written answers `Not a directory`.
+/// All of them are matched here so the code is the same everywhere.
+///
+/// **A missing path is checked first, and deliberately so.** `ENOENT` reads
+/// "No such file or directory", which contains the word the directory branch
+/// looks for; without the ordering below it would be reported as a refusal,
+/// and a plain 404 would arrive at the peer as ERROR 2. Anything left over is
+/// "we cannot give you this file", which is what ERROR 1 means.
 fn host_error_message(error : Error, operation : String) -> ServerError {
   let text = error.to_string()
   if text.contains("No space") ||
     text.contains("no space") ||
     text.contains("ENOSPC") {
     DiskFull(operation)
+  } else if text.contains("ENOENT") ||
+    text.contains("No such file") ||
+    text.contains("no such file") ||
+    text.contains("Not found") ||
+    text.contains("not found") {
+    FileNotFound(operation)
+  } else if text.contains("EISDIR") ||
+    text.contains("Is a directory") ||
+    text.contains("is a directory") ||
+    text.contains("Not a directory") ||
+    text.contains("not a directory") ||
+    text.contains("ENOTDIR") {
+    AccessViolation(operation)
   } else if text.contains("Permission") ||
     text.contains("EACCES") ||
     text.contains("permission") {
@@ -48,7 +71,7 @@ fn host_error_message(error : Error, operation : String) -> ServerError {
 }
 
 ///|
-pub extend HostFileSystem with FileSystem::{read, write, exists}
+pub extend HostFileSystem with FileSystem::{read, write, exists, is_directory}
 
 ///|
 pub impl FileSystem for HostFileSystem with fn read(self, path) {
@@ -76,6 +99,31 @@ pub impl FileSystem for HostFileSystem with fn write(self, path, payload) {
 pub impl FileSystem for HostFileSystem with fn exists(self, path) {
   ignore(self)
   @fs.exists(path)
+}
+
+///|
+pub impl FileSystem for HostFileSystem with fn is_directory(self, path) {
+  ignore(self)
+  // A path that is not there at all is *not* a directory: `read` owes the peer
+  // ERROR 1, and calling a missing name a refusal would turn a plain 404 into
+  // ERROR 2. A stat that fails for any reason is therefore the `false` branch,
+  // and a symlink counts because it is what the name resolves to.
+  is_directory_kind(@fs.kind(path)) catch {
+    _ => false
+  }
+}
+
+///|
+/// Whether a host `FileKind` names a directory.
+///
+/// A separate function because the answer is a two-line rule about one value,
+/// and keeping it out of the `impl` lets the rule be asserted directly rather
+/// than through a stat that may not succeed the way a test wants on every host.
+fn is_directory_kind(kind : @fs.FileKind) -> Bool {
+  match kind {
+    @fs.FileKind::Directory | @fs.FileKind::SymLink => true
+    _ => false
+  }
 }
 
 ///|

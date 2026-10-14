@@ -130,3 +130,64 @@ test "wire_size agrees with the encoded payload it stands for" {
 /// The bytes the sweep above is built from: the two that netascii escapes and
 /// one it passes through.
 let alphabet : Array[Bytes] = [b"a", b"\n", b"\r"]
+
+// ---------------------------------------------------------------------------
+// The directory rule
+// ---------------------------------------------------------------------------
+
+///|
+/// A backend that implements only the three required operations.
+///
+/// It is the proof that `is_directory` really is optional: this type does not
+/// mention it, and the whole `FileSystem` interface still type-checks. A new
+/// backend for a store with no directories therefore has nothing to write.
+struct FilesOnly {
+  payload : Bytes
+}
+
+///|
+pub extend FilesOnly with FileSystem::{read, write, exists, is_directory}
+
+///|
+pub impl FileSystem for FilesOnly with fn read(self, path) {
+  ignore(path)
+  Ok(self.payload)
+}
+
+///|
+pub impl FileSystem for FilesOnly with fn write(self, path, payload) {
+  ignore(self)
+  ignore(path)
+  ignore(payload)
+  Ok(())
+}
+
+///|
+pub impl FileSystem for FilesOnly with fn exists(self, path) {
+  ignore(self)
+  ignore(path)
+  false
+}
+
+///|
+/// The default answers `false`: a backend that says nothing about directories
+/// has none, so the planner falls through to the name check and then to the
+/// backend's own read/write answer.
+async test "a backend that says nothing about directories is not asked to" {
+  let files : FilesOnly = { payload: b"data", }
+  assert_false(FileSystem::is_directory(files, "/anything"))
+  assert_false(files.is_directory("/anything"))
+}
+
+///|
+/// The trailing-slash rule, which is decided from the name alone.
+test "a trailing slash is what the name itself reveals as a directory" {
+  assert_true(is_directory_like("docs/"))
+  assert_true(is_directory_like("/"))
+  assert_true(is_directory_like("a/b/"))
+  // Everything else is the backend's question, not this function's: `docs`
+  // names a directory too, and only a filesystem can say so.
+  assert_false(is_directory_like("docs"))
+  assert_false(is_directory_like("a.txt"))
+  assert_false(is_directory_like(""))
+}

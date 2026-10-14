@@ -26,6 +26,18 @@ fn HostTmpDir::file(self : HostTmpDir, name : String) -> String {
 }
 
 ///|
+/// Makes `name` a directory inside the temp dir, for the directory cases.
+async fn HostTmpDir::dir(self : HostTmpDir, name : String) -> String {
+  let path = self.file(name)
+  try @fs.mkdir(path, recursive=true) catch {
+    _ => ()
+  } noraise {
+    _ => ()
+  }
+  path
+}
+
+///|
 async fn HostTmpDir::drop(self : HostTmpDir) -> Unit {
   try @fs.rmdir(self.path, recursive=true) catch {
     _ => ()
@@ -156,6 +168,39 @@ async test "host filesystem maps a denied read onto ERROR 2" {
 }
 
 ///|
+async test "a real directory is refused as ERROR 2, slash or no slash" {
+  // The regression the issue is about, on the backend that actually has
+  // directories: `sub` and `sub/` name the same directory, and both have to
+  // come back as a refusal rather than as whatever the host happens to say
+  // when a directory is read or written.
+  let tmp = HostTmpDir::new()
+  defer tmp.drop()
+  let files = HostFileSystem::new()
+  let dir = tmp.dir("sub")
+  let file = tmp.file("plain.txt")
+  files.write(file, b"x") |> ignore
+  let options = ServerOptions::default()
+    .with_root(tmp.path)
+    .with_write_policy(AllowOverwrite)
+  for name in ["sub", "sub/"] {
+    match plan_request(options, files, Packet::Rrq(name, Octet, [])) {
+      Err(error) => assert_eq(error.error_code(), ErrorCode::AccessViolation)
+      Ok(_) => fail("expected ERROR 2 for a RRQ of \{name}")
+    }
+    match plan_request(options, files, Packet::Wrq(name, Octet, [])) {
+      Err(error) => assert_eq(error.error_code(), ErrorCode::AccessViolation)
+      Ok(_) => fail("expected ERROR 2 for a WRQ of \{name}")
+    }
+  }
+  // A real file in the same root is untouched by the rule.
+  match plan_request(options, files, Packet::Rrq("plain.txt", Octet, [])) {
+    Ok(action) => assert_eq(action, ServeFile(file))
+    Err(error) => fail("expected the file to be served, got \{error.message()}")
+  }
+  ignore(dir)
+}
+
+///|
 async test "host filesystem answers an empty file with zero bytes" {
   let tmp = HostTmpDir::new()
   defer tmp.drop()
@@ -166,6 +211,25 @@ async test "host filesystem answers an empty file with zero bytes" {
     Ok(payload) => assert_eq(payload.length(), 0)
     Err(error) => fail("expected an empty read, got \{error.message()}")
   }
+}
+
+///|
+async test "host filesystem knows a directory from a file" {
+  let tmp = HostTmpDir::new()
+  defer tmp.drop()
+  let files = HostFileSystem::new()
+  let dir = tmp.dir("sub")
+  let file = tmp.file("plain.txt")
+  files.write(file, b"x") |> ignore
+  // The whole point of the operation: a name spelled *without* a trailing
+  // slash still has to be recognised, because that is how a client sends it.
+  assert_true(files.is_directory(dir))
+  assert_false(files.is_directory(file))
+  // A missing name is not a directory: `read` owes ERROR 1 for it, and
+  // claiming otherwise would turn a plain 404 into an ERROR 2 refusal.
+  assert_false(files.is_directory(tmp.file("nope")))
+  // Nor is the temp dir's own file, asked for by a name that was never made.
+  assert_false(files.is_directory(tmp.file("sub/deeper")))
 }
 
 ///|
@@ -214,6 +278,66 @@ test "a full disk is ERROR 3, a denied file is ERROR 2, anything else ERROR 1" {
   // The operation is what the ERROR names, so a client learns which file it
   // was that could not be served.
   assert_eq(other.message(), "write f")
+}
+
+///|
+/// A directory is ERROR 2, and the wording each platform uses is matched.
+///
+/// The landmine is spelled out here: `ENOENT`'s text is "No such file or
+/// **directory**", so a directory branch that ran before the missing-path
+/// branch would answer ERROR 2 to a client asking for a file that does not
+/// exist. The assertion on `ENOENT` below is what pins that ordering down.
+test "a directory is ERROR 2 but a missing path stays ERROR 1" {
+  for
+    text in [
+      "Is a directory", "EISDIR", "Not a directory", "ENOTDIR", "Permission denied",
+    ] {
+    let error = host_error_message(Failure(text), "read f")
+    assert_eq(error.error_code(), ErrorCode::AccessViolation)
+  }
+  // The message that contains the directory word but means "gone".
+  let missing = host_error_message(
+    Failure("No such file or directory"),
+    "read f",
+  )
+  assert_true(missing is FileNotFound(_))
+  assert_eq(missing.error_code(), ErrorCode::FileNotFound)
+  let enoent = host_error_message(Failure("ENOENT"), "read f")
+  assert_eq(enoent.error_code(), ErrorCode::FileNotFound)
+}
+
+///|
+/// The host's own text for reading a directory, reached through the operation
+/// rather than through a hand-written string.
+///
+/// `host_error_message` is asserted on literals above; this is the same
+/// decision taken from a real errno, so a message the host words differently
+/// from any literal the test knows about is caught here instead of on a user's
+/// machine.
+async test "host filesystem reads a directory as ERROR 2, not ERROR 1" {
+  let tmp = HostTmpDir::new()
+  defer tmp.drop()
+  let files = HostFileSystem::new()
+  let dir = tmp.dir("sub")
+  match files.read(dir) {
+    Err(error) => assert_eq(error.error_code(), ErrorCode::AccessViolation)
+    Ok(_) => fail("expected a directory read to be refused")
+  }
+}
+
+///|
+/// A path under a file is not a directory either, but the host still refuses
+/// it, and the refusal is the same kind: ERROR 2.
+async test "host filesystem writes under a file as ERROR 2" {
+  let tmp = HostTmpDir::new()
+  defer tmp.drop()
+  let files = HostFileSystem::new()
+  let file = tmp.file("plain.txt")
+  files.write(file, b"x") |> ignore
+  match files.write(tmp.file("plain.txt/child"), b"x") {
+    Err(error) => assert_eq(error.error_code(), ErrorCode::AccessViolation)
+    Ok(_) => fail("expected the write to fail")
+  }
 }
 
 // ---------------------------------------------------------------------------

@@ -37,6 +37,27 @@ pub(open) trait FileSystem {
   async fn write(Self, String, Bytes) -> Result[Unit, ServerError]
   /// Whether the path names an existing file, for the WRQ's ERROR 6.
   async fn exists(Self, String) -> Bool
+  /// Whether the path names a directory rather than a file.
+  ///
+  /// Only a backend can answer this: `read` on a directory fails, but the
+  /// error it fails with is not always the same one, so a planner that guessed
+  /// from `read` alone would answer ERROR 1 on some hosts and ERROR 2 on
+  /// others for the very same request. Asking here keeps the "a directory is
+  /// ERROR 2" promise (RFC 1350, section 5) true on every host.
+  ///
+  /// The default answers `false` — a backend with no directories, such as the
+  /// in-memory one, has nothing to report — so a new backend only has to
+  /// implement it where it can be true.
+  async fn is_directory(Self, String) -> Bool = _
+}
+
+///|
+/// The default `is_directory`: a backend with no directories has nothing to
+/// report, so a new backend only writes this where it can be true.
+impl FileSystem with fn is_directory(self, path) {
+  ignore(self)
+  ignore(path)
+  false
 }
 
 ///|
@@ -46,6 +67,12 @@ pub(all) enum ServerError {
   /// The session state machine observed something illegal (ERROR 4).
   IllegalOperation(String)
   /// The path leaves the served root, or names a directory (ERROR 2).
+  ///
+  /// Both halves of that promise are enforced above the backend: the planner
+  /// refuses a traversal itself, and a directory is caught either from the name
+  /// (a trailing slash) or from `FileSystem::is_directory`. A backend that
+  /// fails a directory operation for its own reasons is welcome to answer
+  /// `AccessViolation` too, and the host backend does.
   AccessViolation(String)
   /// The host could not give us the file (ERROR 1).
   FileNotFound(String)
@@ -431,8 +458,10 @@ fn AcceptedOptions::timeout_seconds(self : AcceptedOptions) -> Int32 {
 ///
 /// This is the server's outer state machine: parse the request, check the path
 /// against the sandbox, agree on options, and only then hand back a decision.
-/// `exists` lets the file-exists rule be checked without a second file
-/// backend interface, which keeps the filesystem trait to "read, size, write".
+/// The three questions it asks the backend — `exists` for the file-exists
+/// rule, `is_directory` for the directory rule, and nothing else — are all
+/// answered before any file is opened, which is what keeps a refused request
+/// down to one ERROR packet.
 pub async fn[T : FileSystem] plan_request(
   options : ServerOptions,
   files : T,
@@ -461,7 +490,7 @@ pub async fn[T : FileSystem] plan_request(
       }
       // A directory is not a file to serve, and pretending it is would leak
       // the shape of the tree; ERROR 2 is the honest answer.
-      if is_directory_like(filename) {
+      if is_directory_like(filename) || files.is_directory(path) {
         return Err(AccessViolation("requested path is a directory"))
       }
       // Never answered here: a RRQ's OACK carries `tsize`, the file size, and
@@ -474,7 +503,7 @@ pub async fn[T : FileSystem] plan_request(
         Ok(path) => path
         Err(error) => return Err(error)
       }
-      if is_directory_like(filename) {
+      if is_directory_like(filename) || files.is_directory(path) {
         return Err(AccessViolation("requested path is a directory"))
       }
       if options.write_policy is CreateOnly && files.exists(path) {
@@ -489,10 +518,13 @@ pub async fn[T : FileSystem] plan_request(
 }
 
 ///|
-/// A filename that names a directory rather than a file. A trailing slash is
-/// the one form visible in the name itself; the real check is whether the
-/// resolved path turns out to be a directory, which a filesystem reports as
-/// `AccessViolation`.
+/// A filename that spells out a directory in the name itself.
+///
+/// A trailing slash is the one form the name alone reveals, and it is worth
+/// checking before touching the backend: `docs/` names a directory even on a
+/// backend that has none, and the answer is then ERROR 2 without any I/O.
+/// Whether the *resolved* path is a directory is a separate question, and only
+/// the backend can answer it (`FileSystem::is_directory`).
 fn is_directory_like(name : String) -> Bool {
   name.has_suffix("/")
 }
