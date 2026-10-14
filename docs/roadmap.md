@@ -44,7 +44,7 @@
 - [x] `cmd/main`：`get` / `put` / `serve` 子命令
 - [x] 真实 UDP 套接字上的客户端传输（`transport_socket.mbt`），并让服务端
       会话传输实现 `Transport`（`server_fs.mbt`），使 CLI 复用库的状态机
-- [x] 端到端示例与 README 补全（用法、平台支持矩阵）
+- [x] 端到端示例与 README 补全（用法、平台支持：仅 native）
 - [x] 覆盖率检查与边界用例补齐（`scripts/ci.sh` 用 `moon coverage report -f summary` 汇总，
       再跑 `moon coverage analyze` 把未覆盖行写进 `_build/uncovered.log`，见下）
 - [x] 与 curl 的互操作对拍，并据此修复两个真实对端才暴露的问题
@@ -94,4 +94,4 @@
 
 - DHCP / BOOTP 组合（作为「网络引导工具链」的可选扩展）
 - 与 tftp-hpa / atftp 的对拍（环境暂无这两个程序）
-- 平台支持矩阵细化（native 为主，js / wasm 视 socket 能力而定）
+- 平台支持仅限 native（需要真实网络栈，js / wasm / wasm-gc 不支持）

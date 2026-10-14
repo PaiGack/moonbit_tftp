@@ -22,4 +22,6 @@ keywords = [ "tftp", "udp", "protocol", "netascii", "file-transfer" ]
 
 description = "TFTP (RFC 1350/2347/2348/2349) client and server in pure MoonBit."
 
+// TFTP 需要真实网络栈（TCP + TLS），wasm/wasm-gc 后端无法提供，故声明为 native。
+
 preferred_target = "native"
