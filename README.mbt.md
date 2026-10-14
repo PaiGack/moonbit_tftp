@@ -98,12 +98,16 @@ moon run cmd/main -- put 192.168.1.10:69 ./boot.img remote/boot.img
 | 参数 | 说明 | 默认 |
 | --- | --- | --- |
 | `--blksize N` | 协商的块大小（8~65464） | `512` |
-| `--timeout N` | 单包超时（秒） | `5` |
+| `--timeout N` | 单包超时（秒，1~255） | `5` |
 | `--retries N` | 放弃前的重传次数 | `6` |
 | `--netascii` | 使用 netascii 模式（默认 octet） | 关闭 |
 
 退出码：`0` 成功；`1` 传输失败（对端报错 / 超时 / 本地读写失败）；
 `2` 命令行用法错误。
+
+超出范围的取值按用法错误拒绝（退出码 `2`），不发给对端：服务端有权忽略
+它不认的选项（RFC 2347 §2），而客户端如果照原值继续跑，两边对「一个块有
+多大」的理解会不一致，最后是干等到超时，而不是一条能看懂的报错。
 
 ### 进度与容量校验
 
@@ -172,17 +176,21 @@ socket；socket 后端（`server_fs.mbt`、`transport_socket.mbt`）依赖
 | 目标 | check 结果 | 说明 |
 | --- | --- | --- |
 | `native` | ✅ 通过 | CI 全流程（check / test / build）在 native 上跑 |
-| `js` | ❌ 编译失败 | `moonbitlang/async` 的 `socket` / `fs` 只实现了 native 与 wasm |
-| `wasm` | ❌ 编译失败 | 同上 |
-| `wasm-gc` | ❌ 编译失败 | 同上 |
+| `js` | ❌ 编译失败 | `@fs.*` 与 `@socket.*` 在 js 后端不存在 |
+| `wasm` | ✅ 通过 | 纯 MoonBit 部分可编译，socket / fs 由 wasm FFI 提供 |
+| `wasm-gc` | ❌ 编译失败 | 同 `js` |
 
-`js` / `wasm-gc` 的失败点同样是「`UdpServer` / `UdpClient` / `@fs.read_file`
-在对应后端上不存在」（error 4021 / 4024）：
+`js` / `wasm-gc` 的失败点是「`UdpServer` / `UdpClient` / `@fs.read_file`
+在对应后端上不存在」（error 4021）：
 
 - `server_fs.mbt` —— `@fs.read_file`、`@fs.write_file`、`@fs.exists`、
   `@socket.UdpClient`
 - `transport_socket.mbt` —— `@socket.UdpServer`
 - 对应 `server_fs_wbtest.mbt`、`transport_socket_wbtest.mbt` 中的同类调用
+
+`wasm` 之所以不同：`moonbitlang/async` 为 wasm 提供了这两个包的 FFI，
+根包因此能过 `moon check --target wasm`。但这不等于能跑——wasm 上的
+UDP socket 需要一个宿主环境去实现，仓库里没有验证过，别当成可用后端。
 
 ### CLI `cmd/main`
 
@@ -192,13 +200,13 @@ CLI 是 `executable`，用 `extern "C" fn exit` 退出进程，非 native 后端
 | 目标 | check 结果 | 说明 |
 | --- | --- | --- |
 | `native` | ✅ 通过 | `scripts/ci.sh` 的 CLI 演示在真实 UDP 套接字上跑通 |
-| `js` | ❌ 编译失败 | `cmd/main/main.mbt:53` 的 `extern "C" fn exit`（error 4156） |
+| `js` | ❌ 编译失败 | `cmd/main/main.mbt` 的 `extern "C" fn exit`（error 4156），并叠加根包在 js 上的 socket 报错 |
 | `wasm` | ❌ 编译失败 | 同上 |
-| `wasm-gc` | ❌ 编译失败 | `extern "C" fn exit`，并叠加根包在 js / wasm-gc 上的 socket 报错 |
+| `wasm-gc` | ❌ 编译失败 | 同上 |
 
-> 结论：`moon check` 的失败源在「CLI 的 `extern "C"`（js / wasm）」与
-> 「`moonbitlang/async` 的 socket / fs 只覆盖 native 与 wasm（根包 + CLI）」
-> 两处，与协议层本身无关。除 `native` 外都还没做端到端验证。
+> 结论：`moon check` 的失败源在「CLI 的 `extern "C" fn exit`（js / wasm / wasm-gc）」与
+> 「`moonbitlang/async` 的 socket / fs 只覆盖 native 与 wasm（根包 + CLI）」两处，
+> 与协议层本身无关。除 `native` 外都还没做端到端验证。
 
 ## 文档
 

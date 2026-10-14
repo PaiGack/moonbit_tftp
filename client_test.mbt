@@ -1532,18 +1532,19 @@ async test "put with an empty OACK transfers on the requested settings" {
 /// A silent peer must make the client re-ask, and keep re-asking until its
 /// budget is gone — that is the whole reason a read can survive a lost first
 /// DATA. Both halves are asserted here: the RRQ goes out again for the first
-/// timeout, no wait at all is needed for the give-up path because the budget
-/// is asserted at 0.
+/// timeout, and the give-up path needs no wait because the budget is 1.
 async test "get re-asks on a silent peer and gives up when the budget is gone" {
   let (client, server) = @tftp.MemoryTransport::pair("client:0", "server:69")
   @async.with_task_group(group => {
     group.spawn_bg(() => {
-      // The first RRQ, and the repeat that the client owes on a timeout.
-      match server.recv("client:0", 1000) {
+      // The first RRQ, and the repeat the client owes on a timeout. The recv
+      // window has to outlast the client's own timeout, or the repeat is
+      // missed by a peer that is not actually late.
+      match server.recv("client:0", 8000) {
         @tftp.Recv::Packet(_) => ()
         @tftp.Recv::Timeout => fail("expected the first RRQ")
       }
-      match server.recv("client:0", 1000) {
+      match server.recv("client:0", 8000) {
         @tftp.Recv::Packet(datagram) =>
           assert_true(
             @tftp.decode(datagram.payload()) is Ok(@tftp.Packet::Rrq(_, _, _)),
@@ -1552,8 +1553,11 @@ async test "get re-asks on a silent peer and gives up when the budget is gone" {
       }
       // Silence from here on: the client must run out of retries, not hang.
     })
+    // One second is the shortest timeout the RFC allows (RFC 2349); a zero
+    // timeout is not "instant", it is a recv that never waits, which used to
+    // spend the whole budget in one go.
     let request = @tftp.ClientOptions::default()
-      .with_timeout(0)
+      .with_timeout(1)
       .with_max_retries(1)
     match @tftp.get(client, "server:69", "gone.bin", request) {
       Err(@tftp.ClientError::Timeout) => ()
@@ -1728,9 +1732,9 @@ async test "put times out when the handshake is never acknowledged" {
   @async.with_task_group(group => {
     group.spawn_bg((
     // The WRQ arrives, and is never answered.
-    ) => ignore(server.recv("client:0", 1000)))
+    ) => ignore(server.recv("client:0", 8000)))
     let request = @tftp.ClientOptions::default()
-      .with_timeout(0)
+      .with_timeout(1)
       .with_max_retries(1)
     match @tftp.put(client, "server:69", "f.bin", b"body", request) {
       Err(@tftp.ClientError::Timeout) => ()
@@ -1803,7 +1807,7 @@ async test "put gives up on a peer that only ever acknowledges the old block" {
       // not read either as progress.
       let mut rounds = 0
       while rounds < 4 {
-        match server.recv("client:0", 1000) {
+        match server.recv("client:0", 8000) {
           @tftp.Recv::Packet(_) => {
             server.send(@tftp.encode(@tftp.Packet::Ack(0)), "client:0")
             server.send(@tftp.encode(@tftp.Packet::Oack([])), "client:0")
@@ -1814,7 +1818,7 @@ async test "put gives up on a peer that only ever acknowledges the old block" {
       }
     })
     let request = @tftp.ClientOptions::default()
-      .with_timeout(0)
+      .with_timeout(1)
       .with_max_retries(2)
     match @tftp.put(client, "server:69", "f.bin", b"body", request) {
       Err(@tftp.ClientError::Timeout) => ()
@@ -1935,6 +1939,134 @@ async test "put resends when the peer acknowledges an earlier block" {
     match @tftp.put(client, "server:69", "two.bin", payload, request) {
       Ok(outcome) => assert_eq(outcome.sent(), Some(516))
       Err(_) => fail("put failed")
+    }
+  })
+}
+
+///|
+/// A peer that drops the requested `blksize` and answers with plain RFC 1350
+/// DATA at 512 bytes a block must not leave the client looking for an ending
+/// that never comes.
+///
+/// RFC 2347 section 2 lets a server ignore any option it cannot honour, and
+/// this module's own `parse_options` drops `blksize=4` as out of range. The
+/// client then has to run at the RFC 1350 default, not at the 4 it asked for:
+/// a read whose short-block test is `payload.length() < 4` is satisfied by
+/// every 512-byte block the server will ever send, so it waits for a peer that
+/// is answering perfectly.
+async test "get survives a peer that drops an out-of-range blksize" {
+  let (client, server) = @tftp.MemoryTransport::pair("client:0", "server:69")
+  // One full 512-byte block and a short tail: the file ends on the short one,
+  // whatever the client believes the block size to be.
+  let first : Bytes = Bytes::make(512, b'x')
+  @async.with_task_group(group => {
+    group.spawn_bg(() => {
+      // No OACK: the option was refused, so the server just sends DATA.
+      ignore(server.recv("client:0", 1000))
+      server.send(@tftp.encode(@tftp.Packet::Data(1, first)), "client:0")
+      ignore(server.recv("client:0", 8000))
+      server.send(@tftp.encode(@tftp.Packet::Data(2, b"end")), "client:0")
+      ignore(server.recv("client:0", 8000))
+    })
+    let request = @tftp.ClientOptions::default().with_block_size(4)
+    match @tftp.get(client, "server:69", "small.bin", request) {
+      Ok(outcome) =>
+        match outcome.received() {
+          // 512 + 3: every block was delivered, and the tail ended the file.
+          Some(bytes) => assert_eq(bytes.length(), 515)
+          None => fail("expected received bytes")
+        }
+      Err(_) => fail("get stalled on a refused blksize")
+    }
+  })
+}
+
+///|
+/// The same refusal on the write side: a peer that answers a WRQ with a plain
+/// ACK 0 has not accepted `blksize=4`, so the client must slice its DATA at the
+/// default 512 — a 4-byte block size would turn a 600-byte file into 150
+/// packets the server's 512-byte reads cannot keep up with.
+async test "put survives a peer that drops an out-of-range blksize" {
+  let (client, server) = @tftp.MemoryTransport::pair("client:0", "server:69")
+  let payload : Bytes = Bytes::make(600, b'z')
+  @async.with_task_group(group => {
+    group.spawn_bg(() => {
+      ignore(server.recv("client:0", 1000))
+      // ACK 0, not an OACK: the options were ignored.
+      server.send(@tftp.encode(@tftp.Packet::Ack(0)), "client:0")
+      // The first block is a full 512 bytes, which is what the server will
+      // only ever see if the client sliced at the default.
+      match server.recv("client:0", 8000) {
+        @tftp.Recv::Packet(datagram) => {
+          assert_eq(datagram.payload().length(), 516)
+          server.send(@tftp.encode(@tftp.Packet::Ack(1)), "client:0")
+        }
+        @tftp.Recv::Timeout => fail("no DATA 1")
+      }
+      match server.recv("client:0", 8000) {
+        @tftp.Recv::Packet(_) =>
+          server.send(@tftp.encode(@tftp.Packet::Ack(2)), "client:0")
+        @tftp.Recv::Timeout => fail("no DATA 2")
+      }
+    })
+    let request = @tftp.ClientOptions::default().with_block_size(4)
+    match @tftp.put(client, "server:69", "big.bin", payload, request) {
+      Ok(outcome) => assert_eq(outcome.sent(), Some(600))
+      Err(_) => fail("put stalled on a refused blksize")
+    }
+  })
+}
+
+///|
+/// A read whose OACK was answered but whose first DATA never arrives owes the
+/// server a repeated RRQ, not a repeated ACK 0: the peer has nothing to
+/// retransmit yet, so asking again is the only nudge that can move it.
+///
+/// This is the `expected == 1` arm of the timeout branch, which the memory
+/// transport only reaches when the clock fires after the OACK — the tests
+/// above deliver every packet before the timeout can.
+async test "get repeats the RRQ when the first DATA is lost after an OACK" {
+  let (client, server) = @tftp.MemoryTransport::pair("client:0", "server:69")
+  @async.with_task_group(group => {
+    group.spawn_bg(() => {
+      ignore(server.recv("client:0", 8000))
+      // The OACK is answered with ACK 0, and then nothing: the server's first
+      // DATA is lost on the way out.
+      server.send(
+        @tftp.encode(
+          @tftp.Packet::Oack([@tftp.TftpOption::new("blksize", "512")]),
+        ),
+        "client:0",
+      )
+      match server.recv("client:0", 8000) {
+        @tftp.Recv::Packet(datagram) =>
+          assert_eq(@tftp.decode(datagram.payload()), Ok(@tftp.Packet::Ack(0)))
+        @tftp.Recv::Timeout => fail("expected ACK 0 for the OACK")
+      }
+      // The client's timeout fires while it is still waiting on block 1, so
+      // the nudge is the request itself.
+      match server.recv("client:0", 8000) {
+        @tftp.Recv::Packet(datagram) =>
+          assert_true(
+            @tftp.decode(datagram.payload()) is Ok(@tftp.Packet::Rrq(_, _, _)),
+          )
+        @tftp.Recv::Timeout => fail("expected the RRQ to be repeated")
+      }
+      // Only now does the data start flowing.
+      server.send(@tftp.encode(@tftp.Packet::Data(1, b"late")), "client:0")
+      ignore(server.recv("client:0", 8000))
+    })
+    let request = @tftp.ClientOptions::default()
+      .with_block_size(512)
+      .with_timeout(1)
+      .with_max_retries(3)
+    match @tftp.get(client, "server:69", "late.bin", request) {
+      Ok(outcome) =>
+        match outcome.received() {
+          Some(bytes) => assert_true(bytes == b"late")
+          None => fail("expected received bytes")
+        }
+      Err(_) => fail("get failed on a lost first DATA")
     }
   })
 }

@@ -58,7 +58,8 @@
 所以 `scripts/ci.sh` 两步都跑：`report` 给数字，`analyze` 给名单
 （写进 `_build/uncovered.log`）。
 
-当前 `1271/1441`，未覆盖 56 行，分布如下：
+当前 `1292/1462`，未覆盖 56 行，分布如下（`moon coverage analyze` 的名单，
+不含任何测试都没加载过的文件——那类文件 `report -f summary` 会整份漏掉）：
 
 | 文件 | 未覆盖 |
 | --- | --- |
@@ -69,7 +70,6 @@
 | `transport_socket.mbt` | 2 |
 | `options.mbt` | 1 |
 | `transport_memory.mbt` | 1 |
-| `server_fs.mbt` | 0 |
 
 剩下的基本都是只能由运行时环境或进程本身触发的：
 
@@ -77,8 +77,9 @@
   `write_local` / `print_usage` 等 IO 胶水。要真正覆盖得让测试自己 `spawn` 一次
   `main.exe`；当前由 `scripts/ci.sh` 里的 CLI 演示跑真实二进制来兜底，本地只测纯逻辑的
   解析器与 `check_capacity` / `ProgressPrinter`。
-- `client.mbt`：`Session::from_oack` 里 `oack.options()` 为空的兜底分支（OACK 一定有
-  options，这一支只是防御），以及剩余读取路径的收尾。
+- `client.mbt`：`usable_timeout` 里「超范围则回落默认」的那一支（越界值由 CLI
+  在入口拒掉，库层的回落只是兜底，正常路径走不到），以及 `Session::from_oack`
+  里 `oack.options()` 为空的防御分支（OACK 一定有 options）。
 - `server.mbt`：同一个文件在 plan 与 read/write 之间消失的竞态分支。
 - `tftp.mbt`：`Mail` 的线格式名（`mode_of` 拒绝 `mail`，这一支只对内部构造的包可达）、
   以及 `Writer::reserve` 里需要一次以上指数扩容才会走到的循环。
