@@ -1047,6 +1047,123 @@ async test "put reports a peer ERROR instead of retrying" {
 }
 
 ///|
+/// The server refuses the option set with ERROR 8: the client must ask again
+/// without options and complete the transfer at RFC 1350 defaults.
+async test "get retries without options after ERROR 8" {
+  let (client, server) = @tftp.MemoryTransport::pair("client:0", "server:69")
+  let payload = b"fallback reads fine"
+  let retried : Ref[Bool] = Ref(false)
+  @async.with_task_group(group => {
+    group.spawn_bg(() => {
+      // First ask: the option set is refused.
+      ignore(server.recv("client:0", 1000))
+      server.send(
+        @tftp.encode(
+          @tftp.Packet::Error(@tftp.OptionNegotiationFailed, "blksize=4"),
+        ),
+        "client:0",
+      )
+      // Second ask: a bare RRQ, so answer it as RFC 1350.
+      let second = server.recv("client:0", 1000)
+      match second {
+        @tftp.Recv::Packet(datagram) =>
+          match @tftp.decode(datagram.payload()) {
+            Ok(@tftp.Packet::Rrq(_, _, options)) =>
+              retried.val = options.is_empty()
+            _ => fail("expected a plain RRQ on the retry")
+          }
+        @tftp.Recv::Timeout => fail("the client did not retry")
+      }
+      server.send(@tftp.encode(@tftp.Packet::Data(1, payload)), "client:0")
+      ignore(server.recv("client:0", 8000))
+    })
+    let result = @tftp.get(
+      client,
+      "server:69",
+      "fallback.bin",
+      @tftp.ClientOptions::default().with_block_size(1024),
+    )
+    match result {
+      Ok(outcome) =>
+        match outcome.received() {
+          Some(bytes) => assert_eq(bytes, payload)
+          None => fail("expected received bytes")
+        }
+      Err(_) => fail("the client should have retried without options")
+    }
+  })
+  assert_true(retried.val)
+}
+
+///|
+/// The same fallback on the write side: ERROR 8 to the WRQ, then a bare WRQ.
+async test "put retries without options after ERROR 8" {
+  let (client, server) = @tftp.MemoryTransport::pair("client:0", "server:69")
+  let payload = b"fallback writes fine"
+  let retried : Ref[Bool] = Ref(false)
+  let seen : Ref[Int32] = Ref(0)
+  @async.with_task_group(group => {
+    group.spawn_bg(() => {
+      ignore(server.recv("client:0", 1000))
+      server.send(
+        @tftp.encode(
+          @tftp.Packet::Error(@tftp.OptionNegotiationFailed, "timeout=0"),
+        ),
+        "client:0",
+      )
+      let second = server.recv("client:0", 1000)
+      match second {
+        @tftp.Recv::Packet(datagram) =>
+          match @tftp.decode(datagram.payload()) {
+            Ok(@tftp.Packet::Wrq(_, _, options)) =>
+              retried.val = options.is_empty()
+            _ => fail("expected a plain WRQ on the retry")
+          }
+        @tftp.Recv::Timeout => fail("the client did not retry")
+      }
+      seen.val = serve_write_after_request(server)
+    })
+    let result = @tftp.put(
+      client,
+      "server:69",
+      "fallback.txt",
+      payload,
+      @tftp.ClientOptions::default().with_block_size(8),
+    )
+    match result {
+      Ok(outcome) => assert_eq(outcome.sent(), Some(payload.length()))
+      Err(_) => fail("the client should have retried without options")
+    }
+  })
+  assert_true(retried.val)
+  assert_eq(seen.val, payload.length())
+}
+
+///|
+/// Acks block 0, then every DATA, for a server whose request is already read.
+async fn serve_write_after_request(server : @tftp.MemoryTransport) -> Int32 {
+  server.send(@tftp.encode(@tftp.Packet::Ack(0)), "client:0")
+  let mut received = 0
+  while true {
+    match server.recv("client:0", 1000) {
+      @tftp.Recv::Timeout => break
+      @tftp.Recv::Packet(datagram) =>
+        match @tftp.decode(datagram.payload()) {
+          Ok(@tftp.Packet::Data(block, chunk)) => {
+            received = received + chunk.length()
+            server.send(@tftp.encode(@tftp.Packet::Ack(block)), "client:0")
+            if chunk.length() == 0 {
+              break
+            }
+          }
+          _ => break
+        }
+    }
+  }
+  received
+}
+
+///|
 async test "put reports an ERROR that arrives mid-transfer" {
   let (client, server) = @tftp.MemoryTransport::pair("client:0", "server:69")
   @async.with_task_group(group => {

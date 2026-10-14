@@ -33,6 +33,7 @@
 - [x] 超时重传 + 重复包去重（Sorcerer's Apprentice）
 - [x] block 号 u16 回绕
 - [x] netascii 转换
+- [x] 选项被拒（ERROR 8）的去 options 重发一次，与无 OACK 的缺省回退
 
 ## M4 服务端（已完成）
 
