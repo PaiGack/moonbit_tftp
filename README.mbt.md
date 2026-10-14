@@ -164,49 +164,22 @@ async fn download() -> Unit {
 
 ## 平台支持
 
-TFTP 基于 UDP，需要宿主提供 UDP socket。当前只有 `native` 是可端到端跑通的
-目标，其余后端的编译结果按「包 / 目标」分开看，与 `moon check --target <t>` 一致：
+TFTP 基于 UDP，需要宿主提供真实网络栈，`wasm` / `wasm-gc` 后端无法提供，
+故声明为 `native`。仓库在 `moon.mod` 里写明了这一点：
 
-### 根包 `PaiGack/tftp`（协议层 + 状态机 + socket 后端）
+```
+// TFTP 需要真实网络栈（TCP + TLS），wasm/wasm-gc 后端无法提供，故声明为 native。
 
-报文编解码、选项协商、netascii 与两个状态机都是纯函数或纯状态转移，不依赖
-socket；socket 后端（`server_fs.mbt`、`transport_socket.mbt`）依赖
-`moonbitlang/async` 的 `socket` / `fs` 实现。
+preferred_target = "native"
+```
 
-| 目标 | check 结果 | 说明 |
-| --- | --- | --- |
-| `native` | ✅ 通过 | CI 全流程（check / test / build）在 native 上跑 |
-| `js` | ❌ 编译失败 | `@fs.*` 与 `@socket.*` 在 js 后端不存在 |
-| `wasm` | ✅ 通过 | 纯 MoonBit 部分可编译，socket / fs 由 wasm FFI 提供 |
-| `wasm-gc` | ❌ 编译失败 | 同 `js` |
+换句话说：
 
-`js` / `wasm-gc` 的失败点是「`UdpServer` / `UdpClient` / `@fs.read_file`
-在对应后端上不存在」（error 4021）：
-
-- `server_fs.mbt` —— `@fs.read_file`、`@fs.write_file`、`@fs.exists`、
-  `@socket.UdpClient`
-- `transport_socket.mbt` —— `@socket.UdpServer`
-- 对应 `server_fs_wbtest.mbt`、`transport_socket_wbtest.mbt` 中的同类调用
-
-`wasm` 之所以不同：`moonbitlang/async` 为 wasm 提供了这两个包的 FFI，
-根包因此能过 `moon check --target wasm`。但这不等于能跑——wasm 上的
-UDP socket 需要一个宿主环境去实现，仓库里没有验证过，别当成可用后端。
-
-### CLI `cmd/main`
-
-CLI 是 `executable`，用 `extern "C" fn exit` 退出进程，非 native 后端不支持
-`extern "C"`。
-
-| 目标 | check 结果 | 说明 |
-| --- | --- | --- |
-| `native` | ✅ 通过 | `scripts/ci.sh` 的 CLI 演示在真实 UDP 套接字上跑通 |
-| `js` | ❌ 编译失败 | `cmd/main/main.mbt` 的 `extern "C" fn exit`（error 4156），并叠加根包在 js 上的 socket 报错 |
-| `wasm` | ❌ 编译失败 | 同上 |
-| `wasm-gc` | ❌ 编译失败 | 同上 |
-
-> 结论：`moon check` 的失败源在「CLI 的 `extern "C" fn exit`（js / wasm / wasm-gc）」与
-> 「`moonbitlang/async` 的 socket / fs 只覆盖 native 与 wasm（根包 + CLI）」两处，
-> 与协议层本身无关。除 `native` 外都还没做端到端验证。
+- `native` 是唯一支持的目标，`scripts/ci.sh` 的 check / test / build 全跑在它上面。
+- `js` / `wasm` / `wasm-gc` 不在支持范围内，仓库不承诺它们能编译、能跑。
+- 协议层（报文编解码、选项协商、netascii）与状态机是纯函数，不碰 socket，
+  理论上可在任意后端离线使用；但一碰到 `moonbitlang/async` 的 `socket` / `fs`
+  （`server_fs.mbt`、`transport_socket.mbt`）就回到 native 这条路上。
 
 ## 文档
 
