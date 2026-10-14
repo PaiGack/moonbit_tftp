@@ -13,6 +13,10 @@
 
 - [x] 报文字节编解码：RRQ / WRQ / DATA / ACK / ERROR / OACK（`encode` / `decode`）
 - [x] 往返测试 + 畸形报文（截断、非法 opcode、超长字段、缺 `\0`）处理
+      —— 四类原因各有自己的 `DecodeError`：`Truncated` / `UnknownOpcode` /
+      `MissingTerminator` / `FieldTooLong`。超长字段是**被 `\0` 终结但超过
+      `max_field_length`** 的那种，不再与「缺 `\0`」共用一个变体；
+      文件名、mode、选项名 / 值、ERROR 报文统一走同一把尺子
 - [x] 通道模式枚举：netascii / octet（mail 只留枚举值，`decode` 拒绝）
 - [x] 选项 `Option\0Value\0` 拆分（取值校验留给 M2）
 

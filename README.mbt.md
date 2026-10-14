@@ -12,7 +12,9 @@ TFTP（Trivial File Transfer Protocol，简单文件传输协议）的纯 MoonBi
 做成一个「协议库 + 客户端 + 服务端 + 命令行」的完整实现，各层共享报文编解码：
 
 - **报文层**：RRQ / WRQ / DATA / ACK / ERROR / OACK 的编解码（`encode` / `decode`），
-  通道模式（netascii / octet），畸形报文以 `DecodeError` 返回，block 号 u16 回绕。
+  通道模式（netascii / octet），畸形报文以 `DecodeError` 返回
+  （`Truncated` / `UnknownOpcode` / `MissingTerminator` / `FieldTooLong` /
+  `Unsupported`，各自指名道姓），block 号 u16 回绕。
 - **客户端**：`get` / `put`，超时重传、重复包去重（Sorcerer's Apprentice 问题修复）、
   blksize / timeout / tsize 选项协商。
 - **服务端**：69 端口监听、每请求独立 TID 会话、并发会话管理、

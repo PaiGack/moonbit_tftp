@@ -16,7 +16,21 @@ pub let default_port : Int32 = 69
 ///|
 /// Longest filename accepted in a RRQ/WRQ, in bytes. The RFC imposes no limit;
 /// this one only exists so a malformed packet cannot make us allocate forever.
+///
+/// Superseded by `max_field_length`, which caps every field at the size of a
+/// legal UDP packet; kept so existing callers of the public name keep working.
 pub let max_filename_length : Int32 = 512
+
+///|
+/// Longest `\0`-terminated field `decode` accepts, in bytes.
+///
+/// This is the single cap shared by every `\0`-terminated field — filename,
+/// mode, option name, option value and ERROR message — so a malformed packet is
+/// rejected on the same rule no matter which field is oversized. It is set to
+/// the largest packet a legitimate RRQ/WRQ can produce: two bytes of opcode
+/// below the 65535-byte UDP datagram ceiling, so nothing a real peer sends can
+/// trip it. The RFC cap on `blksize` (65464, RFC 2348) leaves room to spare.
+pub let max_field_length : Int32 = 65533
 
 ///|
 /// TFTP opcodes as they appear on the wire (RFC 1350, section 5).
@@ -168,6 +182,13 @@ pub(all) enum DecodeError {
   UnknownOpcode(Int32)
   /// A `\0`-terminated field runs past the end of the packet.
   MissingTerminator
+  /// A `\0`-terminated field runs past `max_field_length`.
+  ///
+  /// The RFC puts no cap on any field, so this is our own guard, not a
+  /// protocol rule. It is reported rather than silently truncated or
+  /// allocated: a peer that sends an oversized field is broken, not merely
+  /// unusual, and the size of the allocation must never be the peer's choice.
+  FieldTooLong
   /// Well-formed bytes we deliberately do not implement (e.g. `mail` mode).
   Unsupported(String)
 } derive(Eq, Debug)
@@ -417,61 +438,74 @@ pub fn take_u16(bytes : Bytes, offset : Int32) -> (UInt16, Int32)? {
 ///|
 /// Reads a `\0`-terminated field starting at `offset`, returning the field and
 /// the offset just past its terminator.
-pub fn take_cstring(bytes : Bytes, offset : Int32) -> (String, Int32)? {
+///
+/// Failure says *which* way the field is malformed: `Truncated` when the packet
+/// ends before the field starts, `MissingTerminator` when the field runs to the
+/// last byte without a `\0`, `FieldTooLong` when a terminated field exceeds
+/// `max_field_length`. They are separate variants so a caller (or a test) can
+/// tell a short packet from an oversized field instead of guessing.
+pub fn take_cstring(
+  bytes : Bytes,
+  offset : Int32,
+) -> Result[(String, Int32), DecodeError] {
   let mut end = offset
   while end < bytes.length() && bytes[end] != 0 {
     end = end + 1
   }
   if end >= bytes.length() {
-    // Ran out of bytes before the terminator.
-    None
-  } else if end - offset > max_filename_length {
-    None
+    // Ran out of bytes before the terminator; no byte to distinguish "field
+    // started past the end" from "field consumed the rest of the packet".
+    if offset >= bytes.length() {
+      Err(Truncated)
+    } else {
+      Err(MissingTerminator)
+    }
+  } else if end - offset > max_field_length {
+    Err(FieldTooLong)
   } else {
     let chars : Array[Char] = []
     for i in offset..<end {
       chars.push(bytes[i].to_char())
     }
-    Some((String::from_array(chars), end + 1))
+    Ok((String::from_array(chars), end + 1))
   }
 }
 
 ///|
 /// Reads `Option\0Value\0` pairs until the packet ends.
-pub fn take_options(bytes : Bytes, offset : Int32) -> Array[TftpOption]? {
+///
+/// Every field goes through the same rule as a filename, so an oversized option
+/// name or value is reported as `FieldTooLong` rather than passed on to the
+/// option layer.
+pub fn take_options(
+  bytes : Bytes,
+  offset : Int32,
+) -> Result[Array[TftpOption], DecodeError] {
   let options : Array[TftpOption] = []
   let mut cursor = offset
   while cursor < bytes.length() {
     let name = match take_cstring(bytes, cursor) {
-      Some(pair) => pair
-      None => return None
+      Ok(pair) => pair
+      Err(e) => return Err(e)
     }
     let value = match take_cstring(bytes, name.1) {
-      Some(pair) => pair
-      None => return None
+      Ok(pair) => pair
+      Err(e) => return Err(e)
     }
     options.push(TftpOption::new(name.0, value.0))
     cursor = value.1
   }
-  Some(options)
+  Ok(options)
 }
 
 ///|
-/// Reads a `\0`-terminated field, reporting a `DecodeError` instead of `None`
-/// so the caller can tell "packet too short" from "no terminator".
+/// Alias of `take_cstring`, kept because it reads better at the call sites in
+/// `decode` that pull one field off the wire.
 pub fn take_field(
   bytes : Bytes,
   offset : Int32,
 ) -> Result[(String, Int32), DecodeError] {
-  match take_cstring(bytes, offset) {
-    Some(pair) => Ok(pair)
-    None =>
-      if offset >= bytes.length() {
-        Err(Truncated)
-      } else {
-        Err(MissingTerminator)
-      }
-  }
+  take_cstring(bytes, offset)
 }
 
 ///|
@@ -504,8 +538,8 @@ pub fn decode(bytes : Bytes) -> Result[Packet, DecodeError] {
         None => return Err(Unsupported(mode_field.0))
       }
       let options = match take_options(bytes, mode_field.1) {
-        Some(options) => options
-        None => return Err(MissingTerminator)
+        Ok(options) => options
+        Err(e) => return Err(e)
       }
       if opcode is Rrq {
         Ok(Rrq(filename.0, mode, options))
@@ -542,8 +576,8 @@ pub fn decode(bytes : Bytes) -> Result[Packet, DecodeError] {
     }
     Oack =>
       match take_options(bytes, offset) {
-        Some(options) => Ok(Oack(options))
-        None => Err(MissingTerminator)
+        Ok(options) => Ok(Oack(options))
+        Err(e) => Err(e)
       }
   }
 }

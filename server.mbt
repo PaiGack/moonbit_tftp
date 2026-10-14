@@ -1223,6 +1223,7 @@ fn decode_error_text(reason : DecodeError) -> String {
     Truncated => "packet too short"
     UnknownOpcode(code) => "unknown opcode \{code}"
     MissingTerminator => "unterminated field"
+    FieldTooLong => "field too long"
     Unsupported(value) => "unsupported mode \{value}"
   }
 }
