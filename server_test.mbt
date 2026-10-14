@@ -1722,6 +1722,82 @@ async test "plan_request refuses a WRQ that names a directory" {
 }
 
 ///|
+/// A directory the backend knows about, so the planner's own check can be
+/// exercised without a real disk.
+///
+/// The trailing-slash cases above are decided from the *name* alone and would
+/// pass on any backend, including one with no directories at all. A name like
+/// `docs` carries no such hint: only the filesystem can say it is not a file,
+/// and that is the path a host server actually takes. The fake here exists so
+/// that path is a plain unit test rather than a test that depends on the mode
+/// bits of a temporary directory.
+fn memory_with_directory(
+  file : String,
+  payload : Bytes,
+  directory : String,
+) -> @tftp.MemoryFileSystem {
+  let files = @tftp.MemoryFileSystem::new()
+  files.put(file, payload)
+  files.declare_directory(directory)
+  files
+}
+
+///|
+async test "plan_request refuses a RRQ for a directory named without a slash" {
+  // `docs` is the same directory `docs/` names, and the peer asked for it just
+  // as plainly. The answer has to be the same ERROR 2, or the code's promise
+  // ("a directory is a refusal") only holds for the spelling that carries a
+  // slash.
+  let files = memory_with_directory("/srv/docs/a.txt", b"hi", "/srv/docs")
+  match plan(files, @tftp.Packet::Rrq("docs", @tftp.Octet, [])) {
+    Err(error) => assert_eq(error.error_code(), @tftp.AccessViolation)
+    Ok(_) => fail("expected ERROR 2")
+  }
+  // The file *inside* that directory is still served: the check is about the
+  // path asked for, not about what the path contains.
+  assert_eq(
+    plan(files, @tftp.Packet::Rrq("docs/a.txt", @tftp.Octet, [])),
+    Ok(@tftp.ServeFile("/srv/docs/a.txt")),
+  )
+}
+
+///|
+async test "plan_request refuses a WRQ for a directory named without a slash" {
+  // The write side, under the policy that would otherwise let it through: with
+  // `AllowOverwrite` the file-exists rule is out of the way, so the directory
+  // check is the only thing standing between the client and a write that
+  // cannot work. A backend that let it reach `write` would answer ERROR 1 or
+  // ERROR 2 depending on the host, which is the drift this closes.
+  let files = memory_with_directory("/srv/keep.txt", b"keep", "/srv/docs")
+  let options = @tftp.ServerOptions::default()
+    .with_root("/srv")
+    .with_write_policy(@tftp.AllowOverwrite)
+  match
+    @tftp.plan_request(
+      options,
+      files,
+      @tftp.Packet::Wrq("docs", @tftp.Octet, []),
+    ) {
+    Err(error) => assert_eq(error.error_code(), @tftp.AccessViolation)
+    Ok(_) => fail("expected ERROR 2")
+  }
+}
+
+///|
+async test "a directory name is refused before anything is read or written" {
+  // The planner decides without I/O, which is what keeps a refused request
+  // down to one ERROR packet. The fake records whether it was touched at all:
+  // a directory check that ran `read` first would show up here.
+  let files = memory_with_directory("/srv/docs/a.txt", b"hi", "/srv/docs")
+  match plan(files, @tftp.Packet::Rrq("docs", @tftp.Octet, [])) {
+    Err(error) => assert_eq(error.error_code(), @tftp.AccessViolation)
+    Ok(_) => fail("expected ERROR 2")
+  }
+  assert_eq(files.reads(), [])
+  assert_eq(files.writes(), [])
+}
+
+///|
 async test "plan_request reports the option that could not be agreed on" {
   let files = @tftp.MemoryFileSystem::new()
   // A read request whose `tsize` is not the placeholder 0 is a shape the

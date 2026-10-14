@@ -10,6 +10,14 @@
 pub struct MemoryFileSystem {
   /// Stored files, by path.
   files : Map[String, Bytes]
+  /// Paths that behave as directories, for the planner's directory rule.
+  directories : Map[String, Unit]
+  /// Every path `read` was asked for, in order, so a test can assert that a
+  /// refused request never touched the backend at all. Appended to, never
+  /// reassigned, so the array itself is not `mut`.
+  read_log : Array[String]
+  /// Every path `write` was asked for, in order, for the same reason.
+  write_log : Array[String]
   /// Makes every write fail with ERROR 3, to exercise the disk-full path.
   mut disk_full : Bool
   /// Makes every read fail with ERROR 1, to exercise the missing-file path.
@@ -19,7 +27,14 @@ pub struct MemoryFileSystem {
 ///|
 /// An empty in-memory filesystem.
 pub fn MemoryFileSystem::new() -> MemoryFileSystem {
-  { files: {}, disk_full: false, read_fails: false, }
+  {
+    files: {},
+    directories: {},
+    read_log: [],
+    write_log: [],
+    disk_full: false,
+    read_fails: false,
+  }
 }
 
 ///|
@@ -45,6 +60,32 @@ pub fn MemoryFileSystem::has(self : MemoryFileSystem, path : String) -> Bool {
 }
 
 ///|
+/// Makes `path` behave as a directory.
+///
+/// Nothing is stored there: the only thing a directory changes is the answer
+/// `is_directory` gives, which is exactly the input the planner's rule needs.
+/// The real backend reports directories because a host has them; this one
+/// reports the ones a test declares.
+pub fn MemoryFileSystem::declare_directory(
+  self : MemoryFileSystem,
+  path : String,
+) -> Unit {
+  self.directories[path] = ()
+}
+
+///|
+/// Every path a read was attempted on, in order.
+pub fn MemoryFileSystem::reads(self : MemoryFileSystem) -> Array[String] {
+  self.read_log.copy()
+}
+
+///|
+/// Every path a write was attempted on, in order.
+pub fn MemoryFileSystem::writes(self : MemoryFileSystem) -> Array[String] {
+  self.write_log.copy()
+}
+
+///|
 /// Every path currently stored.
 pub fn MemoryFileSystem::paths(self : MemoryFileSystem) -> Array[String] {
   self.files.keys().collect()
@@ -63,10 +104,11 @@ pub fn MemoryFileSystem::break_reads(self : MemoryFileSystem) -> Unit {
 }
 
 ///|
-pub extend MemoryFileSystem with FileSystem::{read, write, exists}
+pub extend MemoryFileSystem with FileSystem::{read, write, exists, is_directory}
 
 ///|
 pub impl FileSystem for MemoryFileSystem with fn read(self, path) {
+  self.read_log.push(path)
   if self.read_fails {
     return Err(FileNotFound("read \{path}"))
   }
@@ -78,7 +120,7 @@ pub impl FileSystem for MemoryFileSystem with fn read(self, path) {
 
 ///|
 pub impl FileSystem for MemoryFileSystem with fn write(self, path, payload) {
-  ignore(path)
+  self.write_log.push(path)
   if self.disk_full {
     return Err(DiskFull("write \{path}"))
   }
@@ -90,4 +132,11 @@ pub impl FileSystem for MemoryFileSystem with fn write(self, path, payload) {
 pub impl FileSystem for MemoryFileSystem with fn exists(self, path) {
   ignore(self)
   self.files.contains(path)
+}
+
+///|
+pub impl FileSystem for MemoryFileSystem with fn is_directory(self, path) {
+  // Only the directories a test declared: a stored path is a file, and the
+  // empty in-memory tree has no directories of its own.
+  self.directories.contains(path)
 }

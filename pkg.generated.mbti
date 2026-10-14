@@ -215,6 +215,7 @@ pub struct HostFileSystem {
   root : String
 }
 pub async fn HostFileSystem::exists(Self, String) -> Bool
+pub async fn HostFileSystem::is_directory(Self, String) -> Bool
 pub fn HostFileSystem::new() -> Self
 pub async fn HostFileSystem::read(Self, String) -> Result[Bytes, ServerError]
 pub async fn HostFileSystem::write(Self, String, Bytes) -> Result[Unit, ServerError]
@@ -231,19 +232,26 @@ pub fn Mailbox::to_repr(Self) -> @debug.Repr
 
 pub struct MemoryFileSystem {
   files : Map[String, Bytes]
+  directories : Map[String, Unit]
+  read_log : Array[String]
+  write_log : Array[String]
   mut disk_full : Bool
   mut read_fails : Bool
 }
 pub fn MemoryFileSystem::break_reads(Self) -> Unit
+pub fn MemoryFileSystem::declare_directory(Self, String) -> Unit
 pub async fn MemoryFileSystem::exists(Self, String) -> Bool
 pub fn MemoryFileSystem::get(Self, String) -> Bytes?
 pub fn MemoryFileSystem::has(Self, String) -> Bool
+pub async fn MemoryFileSystem::is_directory(Self, String) -> Bool
 pub fn MemoryFileSystem::make_full(Self) -> Unit
 pub fn MemoryFileSystem::new() -> Self
 pub fn MemoryFileSystem::paths(Self) -> Array[String]
 pub fn MemoryFileSystem::put(Self, String, Bytes) -> Unit
 pub async fn MemoryFileSystem::read(Self, String) -> Result[Bytes, ServerError]
+pub fn MemoryFileSystem::reads(Self) -> Array[String]
 pub async fn MemoryFileSystem::write(Self, String, Bytes) -> Result[Unit, ServerError]
+pub fn MemoryFileSystem::writes(Self) -> Array[String]
 pub impl FileSystem for MemoryFileSystem
 
 pub struct MemoryTransport {
@@ -517,6 +525,7 @@ pub(open) trait FileSystem {
   async fn read(Self, String) -> Result[Bytes, ServerError]
   async fn write(Self, String, Bytes) -> Result[Unit, ServerError]
   async fn exists(Self, String) -> Bool
+  async fn is_directory(Self, String) -> Bool = _
 }
 
 pub trait TidAllocator {
