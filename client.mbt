@@ -275,6 +275,77 @@ fn ClientOptions::normalized(self : ClientOptions) -> ClientOptions {
 }
 
 ///|
+/// The request with the extra RFC 2347 options dropped and the block size and
+/// timeout reset to the RFC 1350 defaults.
+///
+/// This is the request a client falls back to when a peer refuses the option
+/// set with ERROR 8: the retry has to *not* re-ask for what was just refused,
+/// and its session numbers have to match the packet that goes on the wire, or
+/// the two peers would disagree about what a block is.
+fn ClientOptions::request_without_options(
+  self : ClientOptions,
+) -> ClientOptions {
+  {
+    ..self,
+    block_size: default_block_size,
+    timeout_seconds: default_timeout,
+    options: [],
+  }
+}
+
+///|
+/// The RRQ for a `get`: `blksize` / `timeout` / `tsize=0`, plus the caller's
+/// extra options when `with_options` is true.
+///
+/// `tsize=0` is the read placeholder (RFC 2349, section 4); with the options
+/// dropped the request is a bare RFC 1350 RRQ.
+fn rrq_packet(
+  request : ClientOptions,
+  filename : String,
+  with_options : Bool,
+) -> Packet {
+  if with_options {
+    Rrq(
+      filename,
+      request.mode,
+      [
+        TftpOption::new("blksize", request.block_size.to_string()),
+        TftpOption::new("timeout", request.timeout_seconds.to_string()),
+        TftpOption::new("tsize", "0"),
+      ] +
+      request.options,
+    )
+  } else {
+    Rrq(filename, request.mode, [])
+  }
+}
+
+///|
+/// The WRQ for a `put`, mirroring `rrq_packet`: the options when asked for,
+/// a bare RFC 1350 request when not.
+fn wrq_packet(
+  request : ClientOptions,
+  filename : String,
+  data : Bytes,
+  with_options : Bool,
+) -> Packet {
+  if with_options {
+    Wrq(
+      filename,
+      request.mode,
+      [
+        TftpOption::new("blksize", request.block_size.to_string()),
+        TftpOption::new("timeout", request.timeout_seconds.to_string()),
+        TftpOption::new("tsize", data.length().to_string()),
+      ] +
+      request.options,
+    )
+  } else {
+    Wrq(filename, request.mode, [])
+  }
+}
+
+///|
 /// Reads the options an OACK accepted, falling back to the request's values.
 ///
 /// Only the options this module implements are understood; anything else is
@@ -384,24 +455,30 @@ pub async fn[T : Transport] get_with_progress(
   // an out-of-range value has to be corrected before either use or the two
   // end up disagreeing about what one packet is.
   let request = request.normalized()
-  // `tsize=0` is the read request's placeholder (RFC 2349, section 4): the
-  // client cannot know the size, only ask for it. Sending it is what lets a
-  // `get` report a percentage from the first block, instead of reporting
-  // nothing until the transfer is already over.
-  let rrq = Packet::Rrq(
-    filename,
-    request.mode,
-    [
-      TftpOption::new("blksize", request.block_size.to_string()),
-      TftpOption::new("timeout", request.timeout_seconds.to_string()),
-      TftpOption::new("tsize", "0"),
-    ] +
-    request.options,
-  )
-  let rrq_bytes = encode(rrq)
+  let mut rrq = rrq_packet(request, filename, true)
+  let mut rrq_bytes = encode(rrq)
   transport.send(rrq_bytes, remote)
+  // A peer that refuses the option set outright (ERROR 8) is not a dead end:
+  // RFC 2347 section 3 lets the server refuse, and RFC 1350 is what is left.
+  // Ask once more with no options at all, so the transfer still runs at the
+  // RFC 1350 defaults instead of failing on a negotiation the peer declined.
   let handshake = match await_options(transport, remote, request, rrq_bytes) {
     Ok(handshake) => handshake
+    Err(PeerError(OptionNegotiationFailed, _)) => {
+      rrq = rrq_packet(request, filename, false)
+      rrq_bytes = encode(rrq)
+      transport.send(rrq_bytes, remote)
+      match
+        await_options(
+          transport,
+          remote,
+          request.request_without_options(),
+          rrq_bytes,
+        ) {
+        Ok(handshake) => handshake
+        Err(error) => return Err(error)
+      }
+    }
     Err(error) => return Err(error)
   }
   let session = handshake.session
@@ -540,19 +617,23 @@ pub async fn[T : Transport] put_with_progress(
     Netascii => netascii_encode_all(data)
     _ => data
   }
-  let wrq = Packet::Wrq(
-    filename,
-    request.mode,
-    [
-      TftpOption::new("blksize", request.block_size.to_string()),
-      TftpOption::new("timeout", request.timeout_seconds.to_string()),
-      TftpOption::new("tsize", encoded.length().to_string()),
-    ] +
-    request.options,
-  )
-  transport.send(encode(wrq), remote)
+  transport.send(encode(wrq_packet(request, filename, encoded, true)), remote)
+  // Same refusable-options path as `get`: a peer that answers ERROR 8 gets one
+  // more ask with the option set dropped, so a refused negotiation falls back
+  // to RFC 1350 rather than ending the transfer.
   let session = match await_write_ack(transport, remote, request) {
     Ok(session) => session
+    Err(PeerError(OptionNegotiationFailed, _)) => {
+      transport.send(
+        encode(wrq_packet(request, filename, encoded, false)),
+        remote,
+      )
+      match
+        await_write_ack(transport, remote, request.request_without_options()) {
+        Ok(session) => session
+        Err(error) => return Err(error)
+      }
+    }
     Err(error) => return Err(error)
   }
   let blocks = split_blocks(encoded, session.block_size)

@@ -1,9 +1,10 @@
 ///|
 /// TFTP protocol primitives (RFC 1350 with options from RFC 2347/2348/2349).
 ///
-/// This package currently publishes the packet layer: opcodes, mode and error
-/// codes, encode/decode, and the canonical 512-byte default block size constant.
-/// Client and server state machines are built on top of it in follow-up changes.
+/// This package publishes the packet layer: opcodes, mode and error codes,
+/// encode/decode, and the canonical 512-byte default block size constant.
+/// The client and server state machines are built on top of it, in this same
+/// package: `client.mbt`, `server.mbt`, and the `Transport` backends.
 
 ///|
 /// Default TFTP data block size, in bytes (RFC 1350).
