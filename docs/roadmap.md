@@ -38,6 +38,8 @@
 - [x] 根目录约束与路径穿越防护（`resolve_path`，拒绝 `..`）
 - [x] 错误码语义（文件不存在 1 / 访问违规 2 / 磁盘满 3 / 非法操作 4 /
       已存在 6 / 协商失败 8 / 超时 0）
+- [x] 畸形请求回 ERROR 4 而非静默丢弃（`Dispatcher::route` 里 `decode` 失败
+      即拒，客户端不必重传到预算耗尽）
 
 ## M5 CLI 与收尾（已完成）
 
@@ -46,49 +48,24 @@
       会话传输实现 `Transport`（`server_fs.mbt`），使 CLI 复用库的状态机
 - [x] 端到端示例与 README 补全（用法、平台支持：仅 native）
 - [x] 覆盖率检查与边界用例补齐（`scripts/ci.sh` 用 `moon coverage report -f summary` 汇总，
-      再跑 `moon coverage analyze` 把未覆盖行写进 `_build/uncovered.log`，见下）
+      再跑 `moon coverage analyze` 把未覆盖行写进 `_build/uncovered.log`）
 - [x] 与 curl 的互操作对拍，并据此修复两个真实对端才暴露的问题
       （见 `docs/interop.md`）
 - [x] roadmap 里 M0~M5 的勾选框回填
 
-## 覆盖率现状
+## 覆盖率
 
-`moon coverage report -f summary` 给汇总数字，但它按「已编译 + 已覆盖 / 已编译」算：
-没被任何测试加载过的文件会被整份漏掉。`moon coverage analyze` 才给出未覆盖行名单。
-所以 `scripts/ci.sh` 两步都跑：`report` 给数字，`analyze` 给名单
-（写进 `_build/uncovered.log`）。
+`scripts/ci.sh` 跑两步：`moon coverage report -f summary` 给汇总数字，
+`moon coverage analyze` 把未覆盖行写进 `_build/uncovered.log`。前者按
+「已编译 + 已覆盖 / 已编译」算，没被任何测试加载过的文件会被整份漏掉，
+所以要两步都跑才能既看到比例又看到名单。
 
-当前 `1292/1462`，未覆盖 56 行，分布如下（`moon coverage analyze` 的名单，
-不含任何测试都没加载过的文件——那类文件 `report -f summary` 会整份漏掉）：
+具体数字与逐文件清单不写在这里：它们每次改动都会变，写进文档只会变成
+一份需要同步维护的过期账本。要看现状就跑上面两条命令。
 
-| 文件 | 未覆盖 |
-| --- | --- |
-| `cmd/main/main.mbt` | 46 |
-| `client.mbt` | 2 |
-| `server.mbt` | 2 |
-| `tftp.mbt` | 2 |
-| `transport_socket.mbt` | 2 |
-| `options.mbt` | 1 |
-| `transport_memory.mbt` | 1 |
-
-剩下的基本都是只能由运行时环境或进程本身触发的：
-
-- `cmd/main/main.mbt`：`main` / `run` / `get` / `put` / `serve` / `read_local` /
-  `write_local` / `print_usage` 等 IO 胶水。要真正覆盖得让测试自己 `spawn` 一次
-  `main.exe`；当前由 `scripts/ci.sh` 里的 CLI 演示跑真实二进制来兜底，本地只测纯逻辑的
-  解析器与 `check_capacity` / `ProgressPrinter`。
-- `client.mbt`：`usable_timeout` 里「超范围则回落默认」的那一支（越界值由 CLI
-  在入口拒掉，库层的回落只是兜底，正常路径走不到），以及 `Session::from_oack`
-  里 `oack.options()` 为空的防御分支（OACK 一定有 options）。
-- `server.mbt`：同一个文件在 plan 与 read/write 之间消失的竞态分支。
-- `tftp.mbt`：`Mail` 的线格式名（`mode_of` 拒绝 `mail`，这一支只对内部构造的包可达）、
-  以及 `Writer::reserve` 里需要一次以上指数扩容才会走到的循环。
-- `options.mbt`：解析循环里的一个防御分支。
-- `transport_*.mbt`：`local_peer` 的少数实现细节、`SocketTransport::read_expected`
-  里 `nobreak` 的不可达兜底。
-
-门槛（比如「覆盖率不得低于 N%」）暂不设置：本仓库能在 CI 里跑的测试集里，有相当一部分
-行为只能靠 `scripts/ci.sh` 里的真实进程对拍，单看行覆盖率容易逼出为了数字而写的测试。
+门槛（比如「覆盖率不得低于 N%」）暂不设置：本仓库能在 CI 里跑的测试集里，
+有相当一部分行为只能靠 `scripts/ci.sh` 里的真实进程对拍，单看行覆盖率
+容易逼出为了数字而写的测试。
 
 ## 待定
 

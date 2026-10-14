@@ -202,23 +202,26 @@ test "a negotiated tsize must match what was sent" {
 ///|
 test "a progress line only prints when the percentage moves" {
   // The printer is a state machine on the last printed percentage, so the
-  // reporting rule can be checked without a terminal or a transfer.
+  // reporting rule can be checked without a terminal or a transfer. The state
+  // has to live *inside* the printer: the callback the library invokes returns
+  // `Unit`, so nothing can hand a fresh printer back in.
   let printer = ProgressPrinter::new("f")
   assert_eq(printer.last_percent, -1)
   // An unknown total (no tsize) is not reportable, and must leave the state
   // untouched so the first real percentage still prints.
-  let printer = printer.report(@lib.Progress::{ done: 10, total: 0, })
+  printer.report(@lib.Progress::{ done: 10, total: 0, })
   assert_eq(printer.last_percent, -1)
-  let printer = printer.report(@lib.Progress::{ done: 25, total: 100, })
+  printer.report(@lib.Progress::{ done: 25, total: 100, })
   assert_eq(printer.last_percent, 25)
-  // Same percentage again: no second line.
-  let printer = printer.report(@lib.Progress::{ done: 25, total: 100, })
+  // Same percentage again: the state is the printer's own, so this second
+  // report sees the 25% already recorded and prints nothing.
+  printer.report(@lib.Progress::{ done: 25, total: 100, })
   assert_eq(printer.last_percent, 25)
-  let printer = printer.report(@lib.Progress::{ done: 80, total: 100, })
+  printer.report(@lib.Progress::{ done: 80, total: 100, })
   assert_eq(printer.last_percent, 80)
   // A netascii decode can report more local bytes than the wire total; the
   // percentage is clamped so it can never print past 100.
-  let printer = printer.report(@lib.Progress::{ done: 120, total: 100, })
+  printer.report(@lib.Progress::{ done: 120, total: 100, })
   assert_eq(printer.last_percent, 100)
 }
 

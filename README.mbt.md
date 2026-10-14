@@ -70,6 +70,9 @@ moon run cmd/main -- serve --root ./tftpboot --port 6969 --allow-overwrite
 | `--allow-overwrite` | 允许 WRQ 覆盖已存在的文件 | 关闭（仅新建） |
 | `--max-sessions N` | 并发会话上限，超出的请求回 ERROR 4 且不建立会话 | `32` |
 
+无法解析的请求同样回 ERROR 4（RFC 1350 §5 里 4 是「此刻不接受这个请求」的
+唯一通路），不会静默丢弃：静默丢弃只会让对端一直重传到预算耗尽。
+
 ### 下载（get）
 
 ```bash

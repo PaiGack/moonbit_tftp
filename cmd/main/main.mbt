@@ -322,7 +322,7 @@ async fn get(args : TransferArgs) -> Result[Unit, CliError] {
       args.remote,
       args.remote_file,
       args.options,
-      report => ignore(printer.report(report)),
+      report => printer.report(report),
     ) {
     Ok(outcome) =>
       match outcome.received() {
@@ -359,7 +359,7 @@ async fn put(args : TransferArgs) -> Result[Unit, CliError] {
       args.remote_file,
       payload,
       args.options,
-      report => ignore(printer.report(report)),
+      report => printer.report(report),
     ) {
     Ok(outcome) => {
       // Capacity check: the peer's `tsize` is the size it agreed to store.
@@ -418,9 +418,15 @@ fn check_capacity(
 /// TFTP is stop-and-wait, so a per-block line would be one line per RTT and
 /// bury the terminal during a big transfer; reporting on whole-percent steps
 /// keeps the output readable while still showing that the transfer is moving.
+///
+/// `last_percent` is mutable rather than returned: the callback the library
+/// invokes is `(Progress) -> Unit`, so a printer that only produced a *new*
+/// value on each report had nowhere to put it — the caller cannot thread it
+/// back in — and every block then printed a line. Holding the state here is
+/// what makes the whole-percent rule actually take effect.
 priv struct ProgressPrinter {
   name : String
-  last_percent : Int32
+  mut last_percent : Int32
 }
 
 ///|
@@ -429,12 +435,13 @@ fn ProgressPrinter::new(name : String) -> ProgressPrinter {
 }
 
 ///|
+/// Prints one line if this report crosses into a percentage not printed yet.
 fn ProgressPrinter::report(
   self : ProgressPrinter,
   progress : @lib.Progress,
-) -> ProgressPrinter {
+) -> Unit {
   if !progress.is_known() {
-    return self
+    return
   }
   let total = progress.total()
   // A netascii `get` decodes as it goes, so `done` can edge past the wire
@@ -445,10 +452,10 @@ fn ProgressPrinter::report(
     progress.done() * 100 / total
   }
   if percent == self.last_percent {
-    return self
+    return
   }
+  self.last_percent = percent
   println("\{self.name}: \{percent}% (\{progress.done()}/\{total} bytes)")
-  { name: self.name, last_percent: percent, }
 }
 
 ///|
@@ -479,6 +486,9 @@ async fn serve(args : ServeArgs) -> Result[Unit, CliError] {
       let peer = peer_addr.to_string()
       let payload = buffer.unsafe_reinterpret_as_bytes()[:length].to_owned()
       match dispatcher.route(@lib.Datagram::new(payload, peer)) {
+        // The dispatcher already decoded the datagram to decide this, so the
+        // packet is in hand: decoding it a second time here would be work the
+        // decision above already did.
         @lib.Dispatch::Started(tid) =>
           match @lib.decode(payload) {
             Ok(packet) => {
@@ -486,21 +496,35 @@ async fn serve(args : ServeArgs) -> Result[Unit, CliError] {
               group.spawn_bg() <| () => {
                 // Swallow everything: the session's failure is reported in
                 // its own log line, not by terminating the accept loop.
+                //
+                // The log line is not optional. `run_session` reports a
+                // `Failed` outcome itself, so the ordinary ways a session ends
+                // — timeout, peer ERROR, unreadable file — are all covered;
+                // what it cannot report is the transport raising, which is
+                // what a peer that vanished mid-transfer looks like (the
+                // kernel answers our send with ECONNREFUSED). Dropping that
+                // silently would leave a session slot accounted for and
+                // nothing in the log to say it ever existed.
                 run_session(tid, peer, packet, files, options) catch {
-                  _ => ()
+                  error => eprintln("\{peer}: \{error}")
                 }
                 // Hand the slot back, or the dispatcher's ceiling would count
                 // finished sessions as running ones.
                 dispatcher.release()
               }
             }
+            // Unreachable: a session is only started for a datagram that
+            // decoded, and the dispatcher is the one that decoded it.
             Err(_) => ()
           }
         @lib.Dispatch::Rejected(tid~, error~) =>
           // A refused request still gets an answer on the client's own port:
           // ERROR 5 for a client on the wrong TID, ERROR 4 when the session
-          // ceiling is full. The dispatcher already decided which.
+          // ceiling is full or the request was malformed. The dispatcher
+          // already decided which, and the reason travels with the decision.
           reject_session(tid, peer, error.error_code(), error.message())
+        // Unreachable: the dispatcher refuses what it cannot decode, so it has
+        // no "neither" answer to give. Kept so the match stays total.
         @lib.Dispatch::Ignored => ()
       }
     }
