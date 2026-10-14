@@ -387,6 +387,176 @@ async test "a read session of an exact block multiple sends an empty tail block"
 }
 
 ///|
+/// A netascii read sends the file's *encoded* form, which is the half of
+/// netascii the server owns: the client decodes what it receives, so a server
+/// that passed the bytes through would make a CRLF source file come back with
+/// LF line endings. The count is the wire size, and the `tsize` the OACK
+/// announces is the same number.
+async test "a netascii read encodes the file it sends" {
+  let files = @tftp.MemoryFileSystem::new()
+  files.put("/srv/lf.txt", b"line one\nline two\n")
+  let (client, session) = session_pair(
+    files,
+    @tftp.ServerOptions::default().with_root("/srv"),
+    "127.0.0.1:5000",
+    "127.0.0.1:7000",
+  )
+  @async.with_task_group(group => {
+    let task = group.spawn(() => {
+      session.serve(@tftp.Packet::Rrq("lf.txt", @tftp.Netascii, []))
+    })
+    let mut wire = Bytes::new(0)
+    while true {
+      match client.recv("127.0.0.1:7000", 1000) {
+        @tftp.Recv::Packet(datagram) =>
+          match @tftp.decode(datagram.payload()) {
+            Ok(@tftp.Packet::Data(number, chunk)) => {
+              wire = wire + chunk
+              client.send(
+                @tftp.encode(@tftp.Packet::Ack(number)),
+                "127.0.0.1:7000",
+              )
+              if chunk.length() < @tftp.default_block_size {
+                break
+              }
+            }
+            _ => fail("expected DATA")
+          }
+        @tftp.Recv::Timeout => break
+      }
+    }
+    // The wire carries CRLF: 19 bytes for an 18-byte file, one more `\r`.
+    assert_eq(wire, b"line one\r\nline two\r\n")
+    assert_eq(task.wait(), @tftp.Read(20))
+  })
+}
+
+///|
+/// The same conversion across a block boundary, which is where a naive
+/// per-block encoder would break: `netascii_encode_all` resolves the held CR
+/// before the stream is sliced, so a line ending that straddles two blocks is
+/// still one line ending on the wire.
+async test "a netascii read encodes across block boundaries" {
+  let files = @tftp.MemoryFileSystem::new()
+  // 511 bytes, then the line ending, then the rest: the `\r\n` straddles the
+  // first block's end.
+  let head = Bytes::from_array(FixedArray::make(511, b'a'))
+  files.put("/srv/split.txt", head + b"\ntail")
+  let (client, session) = session_pair(
+    files,
+    @tftp.ServerOptions::default().with_root("/srv"),
+    "127.0.0.1:5000",
+    "127.0.0.1:7000",
+  )
+  @async.with_task_group(group => {
+    let task = group.spawn(() => {
+      session.serve(@tftp.Packet::Rrq("split.txt", @tftp.Netascii, []))
+    })
+    let mut wire = Bytes::new(0)
+    while true {
+      match client.recv("127.0.0.1:7000", 1000) {
+        @tftp.Recv::Packet(datagram) =>
+          match @tftp.decode(datagram.payload()) {
+            Ok(@tftp.Packet::Data(number, chunk)) => {
+              wire = wire + chunk
+              client.send(
+                @tftp.encode(@tftp.Packet::Ack(number)),
+                "127.0.0.1:7000",
+              )
+              if chunk.length() < @tftp.default_block_size {
+                break
+              }
+            }
+            _ => fail("expected DATA")
+          }
+        @tftp.Recv::Timeout => break
+      }
+    }
+    assert_eq(wire, head + b"\r\ntail")
+    assert_eq(task.wait(), @tftp.Read(517))
+  })
+}
+
+///|
+/// The write side of the same rule: the server receives the encoded form and
+/// has to store the local one, otherwise a netascii `put` from any client
+/// would land CRLF line endings on disk.
+async test "a netascii write stores the decoded file" {
+  let files = @tftp.MemoryFileSystem::new()
+  let (_, server, session) = session_triple(
+    files,
+    @tftp.ServerOptions::default().with_root("/srv").with_max_retries(5),
+  )
+  // A full block first, then the whole file in the short block that ends it:
+  // the stop-and-wait rule ends the transfer on the first short DATA.
+  let full = Bytes::from_array(FixedArray::make(512, b'z'))
+  inject(server, @tftp.encode(@tftp.Packet::Data(1, full)))
+  inject(
+    server,
+    @tftp.encode(@tftp.Packet::Data(2, b"line one\r\nline two\r\nend")),
+  )
+  match session.serve(@tftp.Packet::Wrq("text.txt", @tftp.Netascii, [])) {
+    @tftp.Written(bytes) => assert_eq(bytes, 512 + 21)
+    other => fail("expected a completed write, got \{outcome_repr(other)}")
+  }
+  assert_eq(files.get("/srv/text.txt"), Some(full + b"line one\nline two\nend"))
+}
+
+///|
+/// A lone CR is the escape that only exists on the wire: `\r\0` decodes back
+/// to a bare `\r`. The last block of a stream is the one that cannot be
+/// resolved by a following byte, so that is where the decoder's held CR has to
+/// be flushed.
+async test "a netascii write resolves a lone CR at the end of the stream" {
+  let files = @tftp.MemoryFileSystem::new()
+  let (_, server, session) = session_triple(
+    files,
+    @tftp.ServerOptions::default().with_root("/srv").with_max_retries(5),
+  )
+  let full = Bytes::from_array(FixedArray::make(512, b'z'))
+  inject(server, @tftp.encode(@tftp.Packet::Data(1, full)))
+  // A trailing lone CR is the case that has no partner inside the block: the
+  // decoder holds it back and `netascii_decode_finish` emits it.
+  let tail = Bytes::from_array([
+    b'k', b'e', b'y', b'\r', b'v', b'a', b'l', b'u', b'e', b'\r', b'\n', b'e', b'n',
+    b'd', b'\r', 0,
+  ])
+  inject(server, @tftp.encode(@tftp.Packet::Data(2, tail)))
+  match session.serve(@tftp.Packet::Wrq("crlf.txt", @tftp.Netascii, [])) {
+    @tftp.Written(bytes) => assert_eq(bytes, 512 + 14)
+    other => fail("expected a completed write, got \{outcome_repr(other)}")
+  }
+  assert_eq(files.get("/srv/crlf.txt"), Some(full + b"key\rvalue\nend\r"))
+}
+
+///|
+/// An octet request is the control: the same server must not touch a byte,
+/// which is what keeps the netascii conversion a property of the mode rather
+/// than of the server.
+async test "an octet read and write leave the payload alone" {
+  let files = @tftp.MemoryFileSystem::new()
+  files.put("/srv/raw.txt", b"line one\r\nline two\r\n")
+  let (_, server, session) = session_triple(
+    files,
+    @tftp.ServerOptions::default().with_root("/srv").with_max_retries(5),
+  )
+  let full = Bytes::from_array(FixedArray::make(512, b'q'))
+  inject(server, @tftp.encode(@tftp.Packet::Data(1, full)))
+  inject(
+    server,
+    @tftp.encode(@tftp.Packet::Data(2, b"line one\r\nline two\r\n")),
+  )
+  match session.serve(@tftp.Packet::Wrq("copy.txt", @tftp.Octet, [])) {
+    @tftp.Written(bytes) => assert_eq(bytes, 512 + 20)
+    other => fail("expected a completed write, got \{outcome_repr(other)}")
+  }
+  assert_eq(
+    files.get("/srv/copy.txt"),
+    Some(full + b"line one\r\nline two\r\n"),
+  )
+}
+
+///|
 async test "a read session reports a missing file as ERROR 1" {
   let files = @tftp.MemoryFileSystem::new()
   let (client, session) = session_pair(

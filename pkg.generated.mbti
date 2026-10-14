@@ -101,9 +101,11 @@ pub fn to_error_packet(ServerError) -> Packet
 pub struct AcceptedOptions {
   options : Options?
   first_packet : Packet?
+  mode : Mode
 } derive(Eq, @debug.Debug)
 pub fn AcceptedOptions::equal(Self, Self) -> Bool
 pub fn AcceptedOptions::first_packet(Self) -> Packet?
+pub fn AcceptedOptions::mode(Self) -> Mode
 pub fn AcceptedOptions::not_equal(Self, Self) -> Bool
 pub fn AcceptedOptions::options(Self) -> Options?
 pub fn AcceptedOptions::to_repr(Self) -> @debug.Repr
@@ -512,13 +514,6 @@ pub(open) trait FileSystem {
   async fn read(Self, String) -> Result[Bytes, ServerError]
   async fn write(Self, String, Bytes) -> Result[Unit, ServerError]
   async fn exists(Self, String) -> Bool
-}
-
-pub(open) trait ServerTransport {
-  async fn send(Self, Bytes, String) -> Unit
-  async fn recv(Self, Int) -> Recv
-  fn local_tid(Self) -> String
-  fn close(Self) -> Unit
 }
 
 pub trait TidAllocator {

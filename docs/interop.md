@@ -30,7 +30,7 @@ curl 的 TFTP 实现严格遵循 RFC 1350/2347，是很好的「外部裁判」�
 | 多块下载 | `curl tftp://127.0.0.1:6969/blob.bin`（4096 B） | ✅ `cmp` 逐字节一致 |
 | 协商 blksize=1024 | `curl --tftp-blksize 1024 .../blob.bin` | ✅ 逐字节一致 |
 | 协商 blksize=512 | `curl --tftp-blksize 512 .../hello.txt` | ✅ 内容一致 |
-| netascii 模式 | `curl "tftp://.../hello.txt;mode=netascii"` | ✅ 内容一致 |
+| netascii 模式 | `curl "tftp://.../hello.txt;mode=netascii"` | ⚠️ 见下方说明 |
 | 上传（WRQ） | `curl -T /tmp/up.txt tftp://127.0.0.1:6969/up.txt` | ✅ 服务端落盘 |
 
 curl 通过 OACK 协商路径与本项目的服务端完成握手，并在多块文件上完成
@@ -40,6 +40,15 @@ curl 通过 OACK 协商路径与本项目的服务端完成握手，并在多块
 正常协商：它会从 OACK 里读到服务端回的真实 `tsize`，说明多这一个选项
 没有破坏真实对端的握手。
 
+**netascii 那一行曾经是假阳性**，记在这里是因为它说明了这类对拍的盲区：
+当时源文件本身就是 CRLF，服务端原样透传，curl 再把 CRLF 解码成 LF，
+两边一对比「一致」。换成 LF 源文件后 curl 下载回来的仍是 LF——正确结果
+应是 CRLF——才暴露出服务端根本没做编码。单向对拍只在客户端编码 +
+服务端透传恰好互补时才会全绿，netascii 必须跑往返。该问题已修复，
+往返对拍见下方「复现」一节，回归测试见 `client_test.mbt` 的
+“a netascii get through the real server decodes to the local form” 与
+`scripts/ci.sh` 的 `get with --netascii`。
+
 ### 对拍二：本项目的客户端
 
 | 用例 | 结果 |
@@ -47,6 +56,7 @@ curl 通过 OACK 协商路径与本项目的服务端完成握手，并在多块
 | `get` 单块 / 多块文件（真实服务端，非测试替身） | ✅ 逐字节一致 |
 | `put` 5000 / 100000 / 4096 字节文件 | ✅ 落盘逐字节一致 |
 | `get --blksize 1024` | ✅ 逐字节一致 |
+| `get --netascii` | ✅ 解码回本地行尾（往返都要过，单向会漏服务端那半边） |
 | 对端文件不存在 | ✅ 报 ERROR 1 |
 
 ### 对拍暴露并修复的两个问题
@@ -85,6 +95,30 @@ cmp /tmp/tftproot/hello.txt /tmp/out.txt && echo identical
 moon run cmd/main -- get 127.0.0.1:6969 hello.txt /tmp/got.txt
 cmp /tmp/tftproot/hello.txt /tmp/got.txt && echo identical
 ```
+
+netascii 必须跑往返，只跑单向会漏掉服务端那半边（见上文假阳性的说明）。
+下面这一组是本仓库 CI（`scripts/ci.sh`）里同一条命令的最小版本：
+
+```bash
+# 源文件是 LF 行尾：netascii 的往返要把它原样带回来
+printf 'line one\nline two\n' > /tmp/tftproot/na.txt
+
+# 上传：客户端编码成 CRLF，服务端解码后落盘，所以磁盘上仍是 LF
+moon run cmd/main -- put 127.0.0.1:6969 /tmp/tftproot/na.txt na.txt --netascii
+printf 'line one\nline two\n' > /tmp/na.lf
+cmp /tmp/na.lf /tmp/tftproot/na.txt && echo identical
+
+# 下载：服务端把磁盘上的 LF 编码成 CRLF 发出去，客户端再解码回 LF
+moon run cmd/main -- get 127.0.0.1:6969 na.txt /tmp/na.got.txt --netascii
+cmp /tmp/na.lf /tmp/na.got.txt && echo identical
+
+# 对照组：不加 --netascii，拿到的就是磁盘上的字节，不做任何转换
+moon run cmd/main -- get 127.0.0.1:6969 na.txt /tmp/na.octet.txt
+cmp /tmp/tftproot/na.txt /tmp/na.octet.txt && echo identical
+```
+
+上面第二、三条在服务端修复前分别是「磁盘上多出 `\r`」和「下载回来仍是
+CRLF」，即客户端对、服务端不对，两边对不齐。
 
 ## 未覆盖
 

@@ -14,8 +14,9 @@ PaiGack/tftp
 ├── transport_socket_wbtest.mbt  白盒测试（真实 UDP 套接字实现）
 ├── client.mbt               公开 API（get / put 停等状态机）
 ├── server.mbt               公开 API（请求处理 / 会话状态机 / TID 分发 / 路径约束）
-├── server_fs.mbt            公开 API（真实文件系统后端 + socket 会话传输，
-                               并让它实现 Transport 以便 CLI 驱动会话）
+├── server_fs.mbt            公开 API（真实文件系统后端 HostFileSystem +
+                               socket 会话传输 SocketSession，后者实现
+                               Transport 以便 CLI 驱动会话）
 ├── server_memory.mbt        公开 API（内存文件系统，离线测试用）
 ├── block.mbt                公开 API（block 号 u16 回绕比较）
 ├── netascii.mbt             公开 API（netascii 转换，含跨块行尾）
@@ -92,12 +93,14 @@ UDP 收发基于 `moonbitlang/async` 的 `socket` 包，不自行编写底层绑
 | --- | --- |
 | 报文编解码 | 手工构造字节序列做往返（round-trip）断言 |
 | 选项协商 | 覆盖接受 / 拒绝 / 缺省回退 / 非法取值 / 未知选项名 |
-| netascii | 边界字符（`\n`、`\r`、行尾跨块） |
+| netascii | 边界字符（`\n`、`\r`、行尾跨块），双向 |
 | 状态机 | 注入时序事件，断言状态转移与输出报文 |
-| 端到端 | 内存传输后端上跑 client ↔ server 全流程 |
+| 端到端 | 内存传输后端上跑 client ↔ server 全流程，netascii 走往返
+（客户端解码 + 服务端编码 / 解码，两边都对才叫通） |
 | 客户端 | 内存传输上跑完整 get / put，覆盖重传、去重、回绕、netascii 跨块 |
 | 服务端 | 路径穿越用例（`..`、绝对路径、编码绕过）、错误码逐个触发、
-内存文件系统上跑完整读 / 写全流程 |
+内存文件系统上跑完整读 / 写全流程，含 netascii 双向
+（读编码 / 写解码、行尾跨块、流尾孤立 `\r`） |
 | 并发 | 多会话并行跑，断言各自的文件互不串扰 |
 | TID | `Dispatcher` 对请求 / 错位报文 / 畸形报文的三种判定 |
 | 会话上限 | 达到 `max_sessions` 后新请求回 ERROR 4，已有会话的 TID 不受影响 |

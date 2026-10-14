@@ -86,3 +86,47 @@ test "a refused option is described as name=value in ERROR 8" {
   }
   ignore(requested)
 }
+
+///|
+/// The `tsize` a RRQ announces and the DATA blocks it is sliced into are two
+/// views of the same conversion, so they must not be computed two ways that can
+/// drift apart: the cheap count has to agree with the encoded buffer's length.
+test "wire_size agrees with the encoded payload it stands for" {
+  let cases : Array[Bytes] = [
+    Bytes::new(0),
+    b"plain ascii",
+    b"one\ntwo\n",
+    b"cr\rlf\r\n",
+    Bytes::from_array(FixedArray::make(600, b'\n')),
+  ]
+  for payload in cases {
+    assert_eq(
+      wire_size(Netascii, payload),
+      netascii_encode_all(payload).length(),
+    )
+    assert_eq(wire_size(Octet, payload), payload.length())
+  }
+  // A sweep over the three bytes that matter, so the pair rule — a `\r\n`
+  // costs nothing, a lone one costs a byte — is pinned rather than sampled:
+  // the cheap counter is the one that has to agree with the real encoder.
+  // Length 1..=4, because every pair shape (lone, leading, trailing, doubled)
+  // shows up inside four bytes.
+  for length in 1..<=4 {
+    for pattern in 0..<(1 << (2 * length)) {
+      let mut payload = Bytes::new(0)
+      for shift in 0..<length {
+        let pick = (pattern >> (2 * shift)) & 3
+        payload += alphabet[if pick == 3 { 0 } else { pick }]
+      }
+      assert_eq(
+        wire_size(Netascii, payload),
+        netascii_encode_all(payload).length(),
+      )
+    }
+  }
+}
+
+///|
+/// The bytes the sweep above is built from: the two that netascii escapes and
+/// one it passes through.
+let alphabet : Array[Bytes] = [b"a", b"\n", b"\r"]

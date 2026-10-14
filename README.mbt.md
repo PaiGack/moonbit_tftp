@@ -139,6 +139,21 @@ moon run cmd/main -- get 127.0.0.1:6969 big.bin ./got.bin    # 下载回来
 cmp ./big.bin ./got.bin && echo "byte-for-byte identical"
 ```
 
+文本文件用 `--netascii` 时同理，只是行尾在线上变成 CRLF、两端各自转回来，
+所以比对对象是本地那份原文，而不是服务端磁盘上的字节：
+
+```bash
+# 终端 B
+printf 'line one\nline two\n' > ./config.txt
+moon run cmd/main -- put 127.0.0.1:6969 ./config.txt --netascii
+moon run cmd/main -- get 127.0.0.1:6969 config.txt ./got.txt --netascii
+cmp ./config.txt ./got.txt && echo "byte-for-byte identical"
+```
+
+只跑单向会漏掉服务端那半边的转换：客户端编码 + 服务端透传在「源文件本来就是
+CRLF」时会假装全绿，换成 LF 源文件才暴露。完整往返与假阳性的来龙去脉见
+[docs/interop.md](docs/interop.md)。
+
 ## 作为库使用
 
 传输由调用方注入，既可以是真实套接字，也可以是内存实现：
@@ -171,7 +186,7 @@ TFTP 基于 UDP，需要宿主提供真实网络栈，`wasm` / `wasm-gc` 后端�
 故声明为 `native`。仓库在 `moon.mod` 里写明了这一点：
 
 ```
-// TFTP 需要真实网络栈（TCP + TLS），wasm/wasm-gc 后端无法提供，故声明为 native。
+// TFTP 需要真实网络栈（UDP），wasm/wasm-gc 后端无法提供，故声明为 native。
 
 preferred_target = "native"
 ```
