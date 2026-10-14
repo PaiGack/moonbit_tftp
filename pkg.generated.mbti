@@ -31,6 +31,8 @@ pub fn join_blocks(Array[Bytes]) -> Bytes
 
 pub let max_block_size : Int
 
+pub let max_field_length : Int
+
 pub let max_filename_length : Int
 
 pub let max_timeout : Int
@@ -79,13 +81,13 @@ pub async fn[T : Transport] serve_write(T, String, AcceptedOptions, ServerOption
 
 pub fn split_blocks(Bytes, Int) -> Array[Bytes]
 
-pub fn take_cstring(Bytes, Int) -> (String, Int)?
+pub fn take_cstring(Bytes, Int) -> Result[(String, Int), DecodeError]
 
 pub fn take_field(Bytes, Int) -> Result[(String, Int), DecodeError]
 
 pub fn take_opcode(Bytes, Int) -> (Opcode, Int)?
 
-pub fn take_options(Bytes, Int) -> Array[TftpOption]?
+pub fn take_options(Bytes, Int) -> Result[Array[TftpOption], DecodeError]
 
 pub fn take_u16(Bytes, Int) -> (UInt16, Int)?
 
@@ -165,6 +167,7 @@ pub(all) enum DecodeError {
   Truncated
   UnknownOpcode(Int)
   MissingTerminator
+  FieldTooLong
   Unsupported(String)
 } derive(Eq, @debug.Debug)
 pub fn DecodeError::equal(Self, Self) -> Bool

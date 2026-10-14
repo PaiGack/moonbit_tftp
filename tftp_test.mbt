@@ -276,22 +276,70 @@ test "ERROR message without a terminator is reported" {
 }
 
 ///|
-test "oversized filename is rejected instead of allocated" {
+/// A field that is *terminated* but oversized must name its own reason.
+///
+/// This used to come back as `MissingTerminator`, which is the same answer a
+/// packet with no `\0` at all gets: the caller could not tell "no terminator"
+/// from "terminator present, field too long". The wire here is perfectly
+/// well-formed, so reporting a missing terminator was simply wrong.
+test "oversized filename is reported as a too-long field" {
   let bytes : Array[Byte] = [0x00, 0x01]
-  for _ in 0..<(@tftp.max_filename_length + 1) {
+  for _ in 0..<(@tftp.max_field_length + 1) {
     bytes.push(b'a')
   }
   bytes.push(0x00)
-  bytes.push(b'o')
-  bytes.push(b'c')
-  bytes.push(b't')
-  bytes.push(b'e')
-  bytes.push(b't')
+  for byte in b"octet" {
+    bytes.push(byte)
+  }
   bytes.push(0x00)
-  assert_eq(
-    @tftp.decode(wire(bytes)),
-    Err(@tftp.DecodeError::MissingTerminator),
-  )
+  assert_eq(@tftp.decode(wire(bytes)), Err(@tftp.DecodeError::FieldTooLong))
+}
+
+///|
+/// The same for the mode field, so the rule is the field's, not the filename's.
+test "oversized mode is reported as a too-long field" {
+  let bytes : Array[Byte] = [0x00, 0x01, b'a', 0x00]
+  for _ in 0..<(@tftp.max_field_length + 1) {
+    bytes.push(b'o')
+  }
+  bytes.push(0x00)
+  assert_eq(@tftp.decode(wire(bytes)), Err(@tftp.DecodeError::FieldTooLong))
+}
+
+///|
+/// Option names and values are length-limited too. Before this they were the
+/// one family of fields that bypassed the cap entirely.
+test "oversized option name is reported as a too-long field" {
+  let bytes : Array[Byte] = [0x00, 0x06]
+  for _ in 0..<(@tftp.max_field_length + 1) {
+    bytes.push(b'b')
+  }
+  bytes.push(0x00)
+  bytes.push(b'1')
+  bytes.push(0x00)
+  assert_eq(@tftp.decode(wire(bytes)), Err(@tftp.DecodeError::FieldTooLong))
+}
+
+///|
+test "oversized option value is reported as a too-long field" {
+  let bytes : Array[Byte] = [0x00, 0x06, b'b', b'l', b'k', 0x00]
+  for _ in 0..<(@tftp.max_field_length + 1) {
+    bytes.push(b'1')
+  }
+  bytes.push(0x00)
+  assert_eq(@tftp.decode(wire(bytes)), Err(@tftp.DecodeError::FieldTooLong))
+}
+
+///|
+/// An ERROR message is a `\0`-terminated field like any other, so it is capped
+/// the same way rather than being the one field an oversized packet can stretch.
+test "oversized error message is reported as a too-long field" {
+  let bytes : Array[Byte] = [0x00, 0x05, 0x00, 0x01]
+  for _ in 0..<(@tftp.max_field_length + 1) {
+    bytes.push(b'x')
+  }
+  bytes.push(0x00)
+  assert_eq(@tftp.decode(wire(bytes)), Err(@tftp.DecodeError::FieldTooLong))
 }
 
 ///|
@@ -309,21 +357,22 @@ test "encode grows past its initial buffer" {
   for _ in 0..<200 {
     filename += "abcdefgh"
   }
-  // 1600 chars is past `max_filename_length`, so decode rejects it: assert the
-  // encoded length only, and round-trip a shorter name instead.
+  // 1600 chars is longer than `max_filename_length` but still inside
+  // `max_field_length`, so this is a legal packet as far as RFC 1350 is
+  // concerned: it encodes *and* round-trips. The cap that matters here is
+  // `max_field_length`, and 1600 bytes is well under it.
   let packet = @tftp.Packet::Wrq(filename, @tftp.Mode::Octet, [
     @tftp.TftpOption::new("blksize", "65464"),
   ])
   let bytes = @tftp.encode(packet)
   assert_eq(bytes.length(), 2 + 1601 + 8 + 7 + 5)
-  // The name is longer than `max_filename_length`, so decode refuses it.
-  assert_eq(@tftp.decode(bytes), Err(@tftp.DecodeError::MissingTerminator))
+  assert_eq(@tftp.decode(bytes), Ok(packet))
 }
 
 ///|
 test "a filename at the length limit still round-trips" {
   let mut filename = ""
-  for _ in 0..<(@tftp.max_filename_length / 8) {
+  for _ in 0..<(@tftp.max_field_length / 8) {
     filename += "abcdefgh"
   }
   let packet = @tftp.Packet::Rrq(filename, @tftp.Mode::Netascii, [])

@@ -991,23 +991,33 @@ test "a datagram that cannot decode is answered with ERROR 4" {
 /// only it sees the raw datagram.
 test "every malformed request is refused with ERROR 4" {
   let dispatcher = @tftp.Dispatcher::new(@tftp.CounterTid::new(50000), 8)
-  let malformed : Array[Bytes] = [
+  // Each entry is paired with the phrase its refusal must carry, so the reason
+  // the packet layer found survives the trip to the wire. "field too long" and
+  // "unterminated field" reading differently is the point: a peer that always
+  // gets the same sentence cannot tell which of its fields to fix.
+  let malformed : Array[(Bytes, String)] = [
     // Opcode and nothing else.
-    b"\x00\x01",
+    (b"\x00\x01", "packet too short"),
     // A filename with no mode after it.
-    b"\x00\x01boot.img\x00",
+    (b"\x00\x01boot.img\x00", "packet too short"),
     // A mode we do not implement.
-    b"\x00\x01boot.img\x00mail\x00",
+    (b"\x00\x01boot.img\x00mail\x00", "unsupported mode mail"),
     // The mode field is never terminated.
-    b"\x00\x01boot.img\x00octet",
-    // A filename longer than any we accept.
-    b"\x00\x01" + Bytes::make(600, b'a') + b"\x00octet\x00",
+    (b"\x00\x01boot.img\x00octet", "unterminated field"),
+    // A filename longer than any UDP datagram can carry, so longer than any
+    // field we accept. It is *terminated*, which is what makes it a length
+    // problem rather than a missing-`\0` one.
+    (
+      b"\x00\x01" + Bytes::make(65534, b'a') + b"\x00octet\x00",
+      "field too long",
+    ),
     // An opcode RFC 1350 does not define.
-    b"\x00\x07boot.img\x00",
+    (b"\x00\x07boot.img\x00", "unknown opcode 7"),
     // An option name with no value after it.
-    b"\x00\x01boot.img\x00octet\x00blksize\x00",
+    (b"\x00\x01boot.img\x00octet\x00blksize\x00", "packet too short"),
   ]
-  for payload in malformed {
+  for entry in malformed {
+    let (payload, reason) = entry
     let decision = dispatcher.route(
       @tftp.Datagram::new(payload, "10.0.0.9:1000"),
     )
@@ -1015,6 +1025,7 @@ test "every malformed request is refused with ERROR 4" {
       @tftp.Rejected(tid~, error~) => {
         ignore(tid)
         assert_eq(error.error_code(), @tftp.IllegalOperation)
+        assert_eq(error.message(), "malformed request: \{reason}")
       }
       other => fail("expected a refusal, got \{tid_repr(other)}")
     }
