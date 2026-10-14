@@ -794,15 +794,76 @@ test "a dispatcher answers a stray ACK with ERROR 5" {
 }
 
 ///|
-test "a dispatcher ignores a datagram it cannot decode" {
+test "a datagram that cannot decode is answered with ERROR 4" {
   let dispatcher = @tftp.Dispatcher::new(@tftp.CounterTid::new(50000), 8)
   let decision = dispatcher.route(
     @tftp.Datagram::new(b"\x00\x01\x02", "10.0.0.9:1000"),
   )
-  // No request started, and nothing sent: a client that speaks something else
-  // gets silence, not an ERROR it cannot interpret.
-  assert_eq(decision, @tftp.Ignored)
+  // No session is started — a malformed body is not a request — but the peer
+  // is told so, with the code RFC 1350 section 5 reserves for "not right now".
   assert_eq(dispatcher.started(), 0)
+  match decision {
+    @tftp.Rejected(tid~, error~) => {
+      assert_eq(tid, "10.0.0.9:50000")
+      assert_eq(error.error_code(), @tftp.IllegalOperation)
+    }
+    other => fail("expected a refusal, got \{tid_repr(other)}")
+  }
+}
+
+///|
+/// The matrix of malformed bodies a peer can send, all of which the dispatcher
+/// answers rather than drops.
+///
+/// Silence would leave the peer retransmitting until its budget ran out, which
+/// is the failure mode an ERROR packet exists to prevent; so every one of these
+/// owes a packet, and the dispatcher has to be the one that decides it because
+/// only it sees the raw datagram.
+test "every malformed request is refused with ERROR 4" {
+  let dispatcher = @tftp.Dispatcher::new(@tftp.CounterTid::new(50000), 8)
+  let malformed : Array[Bytes] = [
+    // Opcode and nothing else.
+    b"\x00\x01",
+    // A filename with no mode after it.
+    b"\x00\x01boot.img\x00",
+    // A mode we do not implement.
+    b"\x00\x01boot.img\x00mail\x00",
+    // The mode field is never terminated.
+    b"\x00\x01boot.img\x00octet",
+    // A filename longer than any we accept.
+    b"\x00\x01" + Bytes::make(600, b'a') + b"\x00octet\x00",
+    // An opcode RFC 1350 does not define.
+    b"\x00\x07boot.img\x00",
+    // An option name with no value after it.
+    b"\x00\x01boot.img\x00octet\x00blksize\x00",
+  ]
+  for payload in malformed {
+    let decision = dispatcher.route(
+      @tftp.Datagram::new(payload, "10.0.0.9:1000"),
+    )
+    match decision {
+      @tftp.Rejected(tid~, error~) => {
+        ignore(tid)
+        assert_eq(error.error_code(), @tftp.IllegalOperation)
+      }
+      other => fail("expected a refusal, got \{tid_repr(other)}")
+    }
+  }
+  // Not one of them opened a session, so the ceiling is untouched.
+  assert_eq(dispatcher.started(), 0)
+  assert_eq(dispatcher.active(), 0)
+  // Refusing a malformed request must not consume the ceiling either: a
+  // well-formed request right after the whole matrix still gets its session.
+  let after = dispatcher.route(
+    @tftp.Datagram::new(
+      @tftp.encode(@tftp.Rrq("a", @tftp.Octet, [])),
+      "10.0.0.9:1000",
+    ),
+  )
+  match after {
+    @tftp.Started(_) => assert_eq(dispatcher.started(), 1)
+    other => fail("expected a session, got \{tid_repr(other)}")
+  }
 }
 
 ///|

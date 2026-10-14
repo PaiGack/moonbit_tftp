@@ -384,12 +384,17 @@ pub async fn[T : Transport] get_with_progress(
   // an out-of-range value has to be corrected before either use or the two
   // end up disagreeing about what one packet is.
   let request = request.normalized()
+  // `tsize=0` is the read request's placeholder (RFC 2349, section 4): the
+  // client cannot know the size, only ask for it. Sending it is what lets a
+  // `get` report a percentage from the first block, instead of reporting
+  // nothing until the transfer is already over.
   let rrq = Packet::Rrq(
     filename,
     request.mode,
     [
       TftpOption::new("blksize", request.block_size.to_string()),
       TftpOption::new("timeout", request.timeout_seconds.to_string()),
+      TftpOption::new("tsize", "0"),
     ] +
     request.options,
   )

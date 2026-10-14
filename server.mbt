@@ -899,12 +899,15 @@ pub(all) enum Dispatch {
   /// with the new session, so it is sent here rather than from the session.
   ///
   /// The reason travels with the decision instead of being re-derived by the
-  /// caller, because there are two distinct reasons and the RFC gives each its
-  /// own code: a packet that is not a request is a client on the wrong TID
-  /// (ERROR 5), while a request beyond the session ceiling is a server that is
-  /// momentarily full (ERROR 4). Existing sessions are untouched either way.
+  /// caller, because there are three distinct reasons and the RFC gives each
+  /// its own code: a packet that is not a request is a client on the wrong TID
+  /// (ERROR 5), a request beyond the session ceiling is a server that is
+  /// momentarily full (ERROR 4), and a datagram that does not decode at all is
+  /// a malformed request (ERROR 4). Existing sessions are untouched either way.
   Rejected(tid~ : String, error~ : ServerError)
-  /// Neither: a datagram that was not a request at all.
+  /// Neither: reserved for a decision the dispatcher never makes. Every
+  /// datagram it receives is either a session or a refusal, so a caller that
+  /// matches on this variant is matching on a case that cannot arrive.
   Ignored
 } derive(Eq, Debug)
 
@@ -1025,6 +1028,12 @@ pub fn[A] Dispatcher::release(self : Dispatcher[A]) -> Unit {
 /// session is a client using the wrong TID, which RFC 1350 section 4 answers
 /// with ERROR 5.
 ///
+/// A datagram that does not decode is answered with ERROR 4 rather than
+/// dropped: RFC 1350 section 5 gives code 4 to "this request is not one I can
+/// take right now", and a body that cannot be parsed is exactly that. Silence
+/// would leave the peer retransmitting until its budget is spent, which is the
+/// failure mode the ERROR packet exists to prevent.
+///
 /// A request that arrives once `max_sessions` are already running is refused
 /// rather than started: the ceiling is the whole point of the field, and a
 /// session that is silently dropped leaves the client retransmitting into the
@@ -1034,7 +1043,13 @@ pub fn[A : TidAllocator] Dispatcher::route(
   datagram : Datagram,
 ) -> Dispatch {
   match decode(datagram.payload()) {
-    Err(_) => Ignored
+    Err(reason) =>
+      Rejected(
+        tid=self.allocator.allocate(datagram.peer()),
+        error=IllegalOperation(
+          "malformed request: \{decode_error_text(reason)}",
+        ),
+      )
     Ok(packet) =>
       match packet {
         Rrq(_, _, _) | Wrq(_, _, _) => {
@@ -1100,4 +1115,19 @@ pub fn timed_out_packet() -> Packet {
 /// Turns a `ServerError` into the packet the peer is owed.
 pub fn to_error_packet(error : ServerError) -> Packet {
   error.to_packet()
+}
+
+///|
+/// The phrase a `DecodeError` becomes in an ERROR 4's message.
+///
+/// Spelled out here rather than reusing the library's own error type in the
+/// message: the message is a human-readable string on the wire, and naming the
+/// internal variant would only help someone reading the source of both ends.
+fn decode_error_text(reason : DecodeError) -> String {
+  match reason {
+    Truncated => "packet too short"
+    UnknownOpcode(code) => "unknown opcode \{code}"
+    MissingTerminator => "unterminated field"
+    Unsupported(value) => "unsupported mode \{value}"
+  }
 }
