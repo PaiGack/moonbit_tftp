@@ -2070,3 +2070,105 @@ async test "get repeats the RRQ when the first DATA is lost after an OACK" {
     }
   })
 }
+
+///|
+/// The netascii round trip through the real server: the client decodes what it
+/// receives, so the server has to *encode* what it sends. A server that passed
+/// the bytes through would hand back the CRLF it stored verbatim, and the
+/// client — which decodes — would turn it into LF anyway, so the file would come
+/// back with the wrong line endings. That asymmetry is invisible to a
+/// client-only test: both sides have to be right for the file to survive.
+async test "a netascii get through the real server decodes to the local form" {
+  let (client, server) = @tftp.MemoryTransport::pair("client:0", "server:69")
+  // Stored with CRLF, as a text file on a DOS or Windows host would be.
+  let stored = b"line one\r\nline two\r\n"
+  let files = @tftp.MemoryFileSystem::new()
+  files.put("/srv/config.txt", stored)
+  @async.with_task_group(group => {
+    group.spawn_bg(() => {
+      let session = @tftp.TransferSession::new(
+        server,
+        files,
+        "client:0",
+        @tftp.ServerOptions::default().with_root("/srv"),
+      )
+      let request = match server.recv("client:0", 1000) {
+        @tftp.Recv::Packet(datagram) =>
+          match @tftp.decode(datagram.payload()) {
+            Ok(packet) => packet
+            Err(_) => fail("bad request")
+          }
+        @tftp.Recv::Timeout => fail("no request")
+      }
+      ignore(session.serve(request))
+    })
+    let result = @tftp.get(
+      client,
+      "server:69",
+      "config.txt",
+      @tftp.ClientOptions::default().with_mode(@tftp.Mode::Netascii),
+    )
+    match result {
+      Ok(outcome) =>
+        match outcome.received() {
+          // The wire carried 20 bytes; the local file is 18, because the CRs
+          // were the encoding and were decoded away.
+          Some(bytes) => assert_eq(bytes, b"line one\nline two\n")
+          None => fail("expected received bytes")
+        }
+      Err(_) => fail("netascii get failed")
+    }
+  })
+}
+
+///|
+/// The write half of the same round trip, and the case a `put`-only test
+/// cannot reach: the client encodes, the server must decode, and the file on
+/// the server's side is the local one.
+async test "a netascii put through the real server stores the local form" {
+  let (client, server) = @tftp.MemoryTransport::pair("client:0", "server:69")
+  let stored = b"line one\nline two\n"
+  let files = @tftp.MemoryFileSystem::new()
+  @async.with_task_group(group => {
+    let served = group.spawn(() => {
+      let session = @tftp.TransferSession::new(
+        server,
+        files,
+        "client:0",
+        @tftp.ServerOptions::default()
+        .with_root("/srv")
+        .with_write_policy(@tftp.WritePolicy::AllowOverwrite),
+      )
+      let request = match server.recv("client:0", 1000) {
+        @tftp.Recv::Packet(datagram) =>
+          match @tftp.decode(datagram.payload()) {
+            Ok(packet) => packet
+            Err(_) => fail("bad request")
+          }
+        @tftp.Recv::Timeout => fail("no request")
+      }
+      session.serve(request)
+    })
+    let result = @tftp.put(
+      client,
+      "server:69",
+      "config.txt",
+      stored,
+      @tftp.ClientOptions::default().with_mode(@tftp.Mode::Netascii),
+    )
+    match result {
+      Ok(outcome) =>
+        // The wire carried 20 bytes: every LF grew a CR.
+        match outcome.sent() {
+          Some(bytes) => assert_eq(bytes, 20)
+          None => fail("expected a byte count")
+        }
+      Err(_) => fail("netascii put failed")
+    }
+    // The file lands when the session ends, so the outcome is waited on before
+    // the store is inspected: a `put` that reported success but stored nothing
+    // is exactly the bug worth catching here.
+    ignore(served.wait())
+    assert_eq(files.get("/srv/config.txt"), Some(stored))
+  })
+}

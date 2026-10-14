@@ -232,11 +232,31 @@ check "the uploaded file matches byte for byte" \
 
 expect_success "put with --netascii" \
   "$CLI" put "$REMOTE" "$WORK/na.txt" na.txt --netascii
-# netascii is not octet: the line feeds travel as CRLF on the wire and are
-# stored that way, so the check is "the CRLF form arrived", not a plain copy.
-printf 'line one\r\nline two\r\n' > "$WORK/na.crlf"
-check "the netascii upload is stored in its CRLF form" \
-  cmp "$WORK/na.crlf" "$ROOT_DIR/na.txt"
+# netascii is not octet: the line feeds travel as CRLF on the wire, and the
+# server decodes them back, so the stored file is the LF form the client read
+# off disk. Checking "the CRLF form arrived" here would only prove the server
+# passed the bytes through — which is what it used to do, and what the
+# round trip below now catches.
+check "the netascii upload is decoded before it is stored" \
+  cmp "$WORK/na.txt" "$ROOT_DIR/na.txt"
+
+# The direction that used to be missing. The upload above proves the client
+# encodes and the server decodes; this one proves the server *encodes*: the
+# served file is now CRLF, so a server that passed the bytes through would hand
+# it back verbatim and the client would store CRLF instead of the LF it started
+# with. A round trip that does not come back to the original bytes is the bug.
+expect_success "get with --netascii" \
+  "$CLI" get "$REMOTE" na.txt "$WORK/na.lf.txt" --netascii
+printf 'line one\nline two\n' > "$WORK/na.lf"
+check "the netascii download is decoded to local line endings" \
+  cmp "$WORK/na.lf" "$WORK/na.lf.txt"
+
+# And the octet control: the same file, fetched without the flag, is the bytes
+# as stored — the conversion is a property of the mode, not of the server.
+expect_success "get the same file as octet" \
+  "$CLI" get "$REMOTE" na.txt "$WORK/na.octet.txt"
+check "the octet download is the file as stored" \
+  cmp "$ROOT_DIR/na.txt" "$WORK/na.octet.txt"
 
 # `--allow-overwrite` is on, so this is a round trip rather than an ERROR 6:
 # the second put must replace the first one, not append to it.

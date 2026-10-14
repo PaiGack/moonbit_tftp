@@ -315,6 +315,11 @@ pub extend RequestAction with @moonbitlang/core/debug.Debug::{to_repr}
 pub struct AcceptedOptions {
   options : Options?
   first_packet : Packet?
+  /// The mode the request asked for. A session needs it because netascii is
+  /// the one mode whose payload is not the file as stored: the read has to
+  /// encode what it sends and the write has to decode what it keeps, so the
+  /// request's mode has to survive negotiation.
+  mode : Mode
 } derive(Eq, Debug)
 
 ///|
@@ -333,6 +338,74 @@ pub fn AcceptedOptions::options(self : AcceptedOptions) -> Options? {
 /// The OACK, or `None` when the transfer runs as plain RFC 1350.
 pub fn AcceptedOptions::first_packet(self : AcceptedOptions) -> Packet? {
   self.first_packet
+}
+
+///|
+/// The transfer mode the request asked for, `Octet` unless it said otherwise.
+pub fn AcceptedOptions::mode(self : AcceptedOptions) -> Mode {
+  self.mode
+}
+
+///|
+/// The mode a RRQ/WRQ asked for.
+///
+/// `Packet::mode` answers `None` for anything that is not a request, and
+/// `accept_options` only ever sees one of those; a caller that somehow gets
+/// something else falls back to the RFC 1350 default rather than failing a
+/// session over it.
+fn request_mode(request : Packet) -> Mode {
+  match request.mode() {
+    Some(mode) => mode
+    None => Octet
+  }
+}
+
+///|
+/// The bytes a read has to put on the wire for `payload`.
+///
+/// `Octet` — and every mode that is not netascii — sends the file as stored;
+/// netascii sends its encoded form, escapes included. Kept as one function so
+/// the `tsize` a RRQ announces and the DATA blocks it is sliced into are
+/// computed by the same conversion and cannot drift apart.
+fn wire_payload(mode : Mode, payload : Bytes) -> Bytes {
+  match mode {
+    Netascii => netascii_encode_all(payload)
+    _ => payload
+  }
+}
+
+///|
+/// The size `payload` will have on the wire under `mode`.
+///
+/// The only bytes netascii changes are `\n` and `\r`, and each of them grows
+/// from one byte to two — except when they are each other's partner: a `\r\n`
+/// already is the two bytes the wire wants, so the pair costs nothing. Counting
+/// that is a single pass and no allocation, which matters because a read needs
+/// this number *before* it sends anything: it is the `tsize` the OACK announces.
+fn wire_size(mode : Mode, payload : Bytes) -> Int32 {
+  match mode {
+    Netascii => {
+      let mut extra = 0
+      let mut i = 0
+      while i < payload.length() {
+        let byte = payload[i]
+        if byte == b'\n' {
+          // A `\n` a `\r` precedes is already half of a `\r\n` on the wire.
+          if i == 0 || payload[i - 1] != b'\r' {
+            extra = extra + 1
+          }
+        } else if byte == b'\r' {
+          // A `\r` a `\n` follows likewise: the pair needs no extra byte.
+          if i + 1 >= payload.length() || payload[i + 1] != b'\n' {
+            extra = extra + 1
+          }
+        }
+        i = i + 1
+      }
+      payload.length() + extra
+    }
+    _ => payload.length()
+  }
 }
 
 ///|
@@ -440,13 +513,21 @@ fn accept_options(
     Err(error) => return Err(OptionNegotiationFailed(error_description(error)))
   }
   if requested.is_empty() {
-    return Ok({ options: None, first_packet: None, })
+    return Ok({
+      options: None,
+      first_packet: None,
+      mode: request_mode(request),
+    })
   }
   let options = match resolve_options(requested, server_value) {
     Ok(options) => options
     Err(error) => return Err(OptionNegotiationFailed(error_description(error)))
   }
-  Ok({ options: Some(options), first_packet: options.oack_packet(), })
+  Ok({
+    options: Some(options),
+    first_packet: options.oack_packet(),
+    mode: request_mode(request),
+  })
 }
 
 ///|
@@ -483,7 +564,16 @@ pub async fn[T : Transport] serve_read(
 ) -> Result[Int32, ServerError] {
   let block_size = accepted.block_size()
   let timeout = timeout_to_ms(accepted.timeout_seconds())
-  let blocks = split_blocks(payload, block_size)
+  // netascii is the one mode in which the file is not the bytes it is stored
+  // as: every `\n` becomes `\r\n` and every `\r` becomes `\r\0`, so the wire
+  // form is a different length and has to be built before it is sliced. It is
+  // sliced *after* the conversion, not before, because a block that starts with
+  // an escaped line ending would otherwise be one byte longer than the
+  // negotiated `blksize`. The whole stream is encoded in one pass for the same
+  // reason the client's `put` does it that way: a held-back CR is resolved
+  // inside `netascii_encode_all`, and a `\r\n` split across two blocks is
+  // something the peer's decoder is required to reassemble anyway.
+  let blocks = split_blocks(wire_payload(accepted.mode(), payload), block_size)
   let mut index = 0
   let mut retries = 0
   let mut packet = match accepted.first_packet() {
@@ -528,6 +618,8 @@ pub async fn[T : Transport] serve_read(
               if blocks[index].length() < block_size {
                 // A short block is the end of the file (RFC 1350, section 1):
                 // the DATA we just sent was the last one and its ACK arrived.
+                // The count is the wire size: it is what was actually sent,
+                // and the `tsize` the OACK announced is the same number.
                 let mut total = 0
                 for i = 0; i <= index; i = i + 1 {
                   total = total + blocks[i].length()
@@ -576,6 +668,11 @@ pub async fn[T : Transport] serve_write(
   let mut out : Bytes = Bytes::new(0)
   let mut expected : UInt16 = 1
   let mut retries = 0
+  // The mirror of `serve_read`: a netascii write receives the encoded form and
+  // has to store the local one, so each block is decoded as it is accepted and
+  // a CR the decoder is still holding at the end of the last block is a real
+  // lone CR (RFC 1350, section 2).
+  let mut netascii : NetasciiState = Clean
   // With options, the OACK is what the peer acknowledges with DATA 1; without
   // them the RFC 1350 handshake is ACK 0.
   let mut packet = match accepted.first_packet() {
@@ -601,7 +698,12 @@ pub async fn[T : Transport] serve_write(
           Ok(Data(block, chunk)) =>
             if block == expected {
               retries = 0
-              out = out + chunk
+              let (state, stored) = match accepted.mode() {
+                Netascii => netascii_decode(netascii, chunk)
+                _ => (Clean, chunk)
+              }
+              netascii = state
+              out = out + stored
               expected = expected + 1
               packet = Ack(block)
               if chunk.length() < block_size {
@@ -609,7 +711,11 @@ pub async fn[T : Transport] serve_write(
                 // owed before we return, otherwise a client that is waiting on
                 // it retransmits into a session that has already gone.
                 transport.send(encode(Ack(block)), peer)
-                return Ok(out)
+                let stored = match accepted.mode() {
+                  Netascii => netascii_decode_finish(netascii, out)
+                  _ => out
+                }
+                return Ok(stored)
               }
             } else if block_before(block, expected) {
               // A duplicate we already have: answer it again, keep the bytes
@@ -814,9 +920,11 @@ pub async fn[U : Transport, T : FileSystem] TransferSession::serve(
         Ok(payload) => payload
         Err(error) => return self.fail(error)
       }
-      // The `tsize` answer is the file size, which only becomes known here, so
-      // the OACK a RRQ carries is rebuilt once the file has been read.
-      let accepted = match accepted_read(request, payload.length()) {
+      let wire_size = wire_size(request_mode(request), payload)
+      // The `tsize` answer is the size the wire will carry, which only becomes
+      // known here, so the OACK a RRQ carries is rebuilt once the file has
+      // been read — and, for a netascii read, once it has been encoded.
+      let accepted = match accepted_read(request, wire_size) {
         Ok(accepted) => accepted
         Err(error) => return self.fail(error)
       }
@@ -865,6 +973,10 @@ async fn[U : Transport, T] TransferSession::fail(
 /// A read request's `tsize` is a placeholder: the client says 0 because only
 /// the server can know the size, so the value has to be supplied here and the
 /// OACK rebuilt with it (RFC 2349, section 4).
+///
+/// `size` is the *encoded* size, not the size on disk: a netascii read
+/// announces the number of bytes it will put on the wire, and that is the
+/// number RFC 2349's `tsize` is about.
 fn accepted_read(
   request : Packet,
   size : Int32,
@@ -1079,23 +1191,6 @@ pub fn[A : TidAllocator] Dispatcher::route(
           )
       }
   }
-}
-
-// ---------------------------------------------------------------------------
-// Transport and filesystem backends
-// ---------------------------------------------------------------------------
-
-///|
-/// The transport a session runs on: a UDP socket bound to the session's TID.
-pub(open) trait ServerTransport {
-  /// Sends one datagram to `peer` from this TID.
-  async fn send(Self, Bytes, peer : String) -> Unit
-  /// Waits for a datagram, reporting `Recv::Timeout` after `timeout_ms`.
-  async fn recv(Self, timeout_ms : Int32) -> Recv
-  /// The TID this endpoint was bound to.
-  fn local_tid(Self) -> String
-  /// Closes the socket. Called when a session ends, so the TID is released.
-  fn close(Self) -> Unit
 }
 
 // ---------------------------------------------------------------------------
