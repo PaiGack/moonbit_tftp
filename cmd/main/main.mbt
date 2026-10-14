@@ -8,7 +8,7 @@
 
 ///|
 /// The version reported by `--version`; kept in step with `moon.mod`.
-let version : String = "0.1.0"
+let version : String = "0.1.1"
 
 ///|
 /// A failed command line, carrying the sentence to print for the user.
@@ -123,10 +123,38 @@ fn parse_transfer(
           None =>
             return Err(CliError("\{arg} expects a number, got `\{value}`"))
         }
+        // The ranges are the RFC ones, and rejecting a value outside them
+        // here is not fussiness: a peer is entitled to drop an option it
+        // cannot honour, and a client that then keeps using its own number
+        // as the transfer's block size or timeout disagrees with the peer
+        // about what one packet is — which ends in a stall, not an error.
         options = match arg {
-          "--blksize" => options.with_block_size(number)
-          "--timeout" => options.with_timeout(number)
-          _ => options.with_max_retries(number)
+          "--blksize" =>
+            if number < @lib.min_block_size || number > @lib.max_block_size {
+              return Err(
+                CliError(
+                  "\{arg} must be between \{@lib.min_block_size} and \{@lib.max_block_size}",
+                ),
+              )
+            } else {
+              options.with_block_size(number)
+            }
+          "--timeout" =>
+            if number < @lib.min_timeout || number > @lib.max_timeout {
+              return Err(
+                CliError(
+                  "\{arg} must be between \{@lib.min_timeout} and \{@lib.max_timeout} seconds",
+                ),
+              )
+            } else {
+              options.with_timeout(number)
+            }
+          _ =>
+            if number <= 0 {
+              return Err(CliError("\{arg} must be positive"))
+            } else {
+              options.with_max_retries(number)
+            }
         }
         i = i + 2
       }
@@ -590,8 +618,8 @@ fn print_usage() -> Unit {
   println("                  [--max-sessions N]")
   println("")
   println("options for get / put:")
-  println("  --blksize N    negotiated block size (default 512)")
-  println("  --timeout N    per-packet timeout in seconds (default 5)")
+  println("  --blksize N    negotiated block size, 8~65464 (default 512)")
+  println("  --timeout N    per-packet timeout in seconds, 1~255 (default 5)")
   println("  --retries N    retransmissions before giving up (default 6)")
   println("  --netascii     use netascii mode instead of octet")
   println("")

@@ -203,10 +203,6 @@ pub fn ClientOptions::with_options(
 ///|
 /// The block size and timeout a transfer actually runs with, after the peer's
 /// OACK is folded in (RFC 2347, section 4).
-///
-/// A peer that does not answer with an OACK leaves the request's own values in
-/// place, so the state machine reads one struct either way instead of branching
-/// on "did negotiation happen".
 priv struct Session {
   mut block_size : Int32
   mut timeout_seconds : Int32
@@ -214,12 +210,67 @@ priv struct Session {
 }
 
 ///|
-/// The session a peer that answers with no OACK gets: exactly what was asked.
+/// The session a peer that answers with no OACK gets.
+///
+/// No OACK means the peer ignored the options (RFC 2347, section 2 lets it
+/// drop any it cannot honour), which for a plain transfer means RFC 1350
+/// defaults — not the numbers the request happened to ask for. Keeping a
+/// rejected `blksize=4` as the short-block test would have the client look
+/// for an ending every peer running at 512 bytes will never send, and a
+/// rejected `timeout=0` would spend the whole retry budget without a single
+/// packet ever being waited on. Both are stalls that look like a dead peer,
+/// so the request's values are only trusted when they are legal to begin with.
 fn Session::plain(request : ClientOptions) -> Session {
   {
-    block_size: request.block_size,
-    timeout_seconds: request.timeout_seconds,
+    block_size: usable_block_size(request.block_size),
+    timeout_seconds: usable_timeout(request.timeout_seconds),
     tsize: None,
+  }
+}
+
+///|
+/// The block size a transfer can actually run at, or the RFC 1350 default.
+///
+/// Used for a number that came from outside the state machine — a request the
+/// peer may have refused, or an OACK the peer may have mis-answered — because
+/// a value outside 8..65464 makes the short-block test that ends a read
+/// unsatisfiable, and a read that cannot end is a hang rather than an error.
+fn usable_block_size(value : Int32) -> Int32 {
+  if value < min_block_size || value > max_block_size {
+    default_block_size
+  } else {
+    value
+  }
+}
+
+///|
+/// The per-packet timeout a transfer can actually wait for, or the default.
+///
+/// `0` and negative values make `Transport::recv` return immediately, so the
+/// retry budget is spent without a single packet ever being waited on and the
+/// transfer fails as if the peer were gone.
+fn usable_timeout(value : Int32) -> Int32 {
+  if value < min_timeout || value > max_timeout {
+    default_timeout
+  } else {
+    value
+  }
+}
+
+///|
+/// The request with its `blksize` and `timeout` brought inside the RFC ranges.
+///
+/// A caller is free to build a `ClientOptions` by hand, and a library that
+/// then puts an out-of-range number on the wire has accepted a request no
+/// peer can answer: the peer drops the option (RFC 2347, section 2), and the
+/// transfer that follows disagrees with it about what a block is or how long
+/// to wait. Normalizing here fixes the wire value *and* the fallback in one
+/// place, so both peers agree on RFC 1350 defaults.
+fn ClientOptions::normalized(self : ClientOptions) -> ClientOptions {
+  {
+    ..self,
+    block_size: usable_block_size(self.block_size),
+    timeout_seconds: usable_timeout(self.timeout_seconds),
   }
 }
 
@@ -234,14 +285,16 @@ fn Session::from_oack(request : ClientOptions, oack : Packet) -> Session {
     Some(options) =>
       for option in options {
         match option.name() {
+          // The peer's answer is clamped the same way a refused option is:
+          // an OACK is a peer's word, not a fact this client can build on.
           "blksize" =>
             match parse_option_int(option.value()) {
-              Some(value) => session.block_size = value
+              Some(value) => session.block_size = usable_block_size(value)
               None => ()
             }
           "timeout" =>
             match parse_option_int(option.value()) {
-              Some(value) => session.timeout_seconds = value
+              Some(value) => session.timeout_seconds = usable_timeout(value)
               None => ()
             }
           "tsize" =>
@@ -326,6 +379,11 @@ pub async fn[T : Transport] get_with_progress(
   request : ClientOptions,
   on_progress : (Progress) -> Unit,
 ) -> Result[TransferOutcome, ClientError] {
+  // Normalized once, here: the request's own numbers go on the wire *and*
+  // stand in for whatever a peer that answers with no OACK leaves behind, so
+  // an out-of-range value has to be corrected before either use or the two
+  // end up disagreeing about what one packet is.
+  let request = request.normalized()
   let rrq = Packet::Rrq(
     filename,
     request.mode,
@@ -470,6 +528,9 @@ pub async fn[T : Transport] put_with_progress(
   request : ClientOptions,
   on_progress : (Progress) -> Unit,
 ) -> Result[TransferOutcome, ClientError] {
+  // See `get_with_progress`: one normalization, before the wire and before the
+  // no-OACK fallback, so neither can be built from an illegal number.
+  let request = request.normalized()
   let encoded = match request.mode {
     Netascii => netascii_encode_all(data)
     _ => data

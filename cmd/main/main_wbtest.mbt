@@ -294,3 +294,54 @@ test "a bare `-v` is a version request, not a transfer flag" {
     _ => fail("expected a parse error")
   }
 }
+
+///|
+test "a blksize outside the RFC range is refused" {
+  // The library drops an option it cannot honour, and the client then has to
+  // run at the default — which is only safe because the CLI refuses these
+  // here, before the request is built. A value this far off is a typo, not a
+  // preference.
+  for value in ["7", "0", "65465", "70000"] {
+    match Command::parse("get", ["h:69", "f", "--blksize", value]) {
+      Err(CliError(message)) => assert_true(message.contains("between"))
+      _ => fail("expected `--blksize \{value}` to be refused")
+    }
+  }
+  // The ends of the range are the RFC's own, and must still parse.
+  match Command::parse("get", ["h:69", "f", "--blksize", "8"]) {
+    Ok(Get(args)) => assert_eq(args.options.block_size(), 8)
+    _ => fail("expected --blksize 8 to be accepted")
+  }
+  match Command::parse("get", ["h:69", "f", "--blksize", "65464"]) {
+    Ok(Get(args)) => assert_eq(args.options.block_size(), 65464)
+    _ => fail("expected --blksize 65464 to be accepted")
+  }
+}
+
+///|
+test "a timeout outside the RFC range is refused" {
+  for value in ["0", "256"] {
+    match Command::parse("get", ["h:69", "f", "--timeout", value]) {
+      Err(CliError(message)) => assert_true(message.contains("between"))
+      _ => fail("expected `--timeout \{value}` to be refused")
+    }
+  }
+  match Command::parse("get", ["h:69", "f", "--timeout", "1"]) {
+    Ok(Get(args)) => assert_eq(args.options.timeout_seconds(), 1)
+    _ => fail("expected --timeout 1 to be accepted")
+  }
+  match Command::parse("get", ["h:69", "f", "--timeout", "255"]) {
+    Ok(Get(args)) => assert_eq(args.options.timeout_seconds(), 255)
+    _ => fail("expected --timeout 255 to be accepted")
+  }
+}
+
+///|
+test "a retry budget of zero is refused" {
+  // `0` retries means one attempt and no second chance, which is not what
+  // the flag promises; a negative number does not even reach the wire.
+  match Command::parse("get", ["h:69", "f", "--retries", "0"]) {
+    Err(CliError(message)) => assert_true(message.contains("positive"))
+    _ => fail("expected --retries 0 to be refused")
+  }
+}
