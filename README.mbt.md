@@ -16,7 +16,7 @@ TFTP（Trivial File Transfer Protocol，简单文件传输协议）的纯 MoonBi
 - **客户端**：`get` / `put`，超时重传、重复包去重（Sorcerer's Apprentice 问题修复）、
   blksize / timeout / tsize 选项协商。
 - **服务端**：69 端口监听、每请求独立 TID 会话、并发会话管理、
-  读写权限与路径穿越防护、错误码语义。
+  根目录约束（路径穿越防护）与写入策略（仅新建 / 允许覆盖）、错误码语义。
 - **CLI**：`cmd/main` 的 `get` / `put` / `serve` 三个子命令。
 
 ## 当前状态
