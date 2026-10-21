@@ -158,27 +158,42 @@ CRLF」时会假装全绿，换成 LF 源文件才暴露。完整往返与假阳
 
 ## 作为库使用
 
-传输由调用方注入，既可以是真实套接字，也可以是内存实现：
+传输由调用方注入：真实套接字用 `SocketTransport`，单元测试里用内存实现
+`MemoryTransport`。下面这一段是「拿到 transport → 调 `get`」的完整写法——
+它标了 `moonbit check`，`scripts/ci.sh` 会真的去编译、去跑，示例漂移不动声色
+的日子到此为止：
 
-```moonbit nocheck
+- 包别名：`@tftp` 是本仓库的包别名（`moon.pkg` 与所有测试都用它）。
+  `cmd/main` 里写作 `@lib`，只是那边的别名起得不一样。
+- `SocketTransport::new` 是 `async` 的，**必须 `await`**：漏掉拿到的是
+  `Unit`，`get` 会报「`Unit` 不实现 `Transport`」。这里的 `async test`
+  就是那个 async 上下文。
+- 对端填的是 `192.168.1.10`（示例里的占位主机），所以这次传输按预期失败；
+  示例证明的是 `get` 的签名与用法，不是网络能不能通。
+
+```moonbit check
 ///|
-async fn download() -> Unit {
+#cfg(target="native")
+async test {
+  // 示例要的是「Transport 由调用方注入 + 调 get」这段代码能编译、能跑，
+  // 不是真去下载文件：`192.168.1.10` 在这台机器上不存在，握手必然失败。
   let transport = @tftp.SocketTransport::new("192.168.1.10:69")
   defer transport.close()
-  match
-    @tftp.get(
-      transport,
-      "192.168.1.10:69",
-      "boot.img",
-      @tftp.ClientOptions::default(),
-    ) {
-    Ok(outcome) =>
-      match outcome.received() {
-        Some(bytes) => println("got \{bytes.length()} bytes")
-        None => ()
-      }
-    Err(_) => println("transfer failed")
+  // 一次尝试、一秒超时：文档示例不该在 CI 里把重传预算耗满。
+  let options = @tftp.ClientOptions::default()
+    .with_timeout(1)
+    .with_max_retries(1)
+  let download = () => {
+    match @tftp.get(transport, "192.168.1.10:69", "boot.img", options) {
+      Ok(outcome) =>
+        match outcome.received() {
+          Some(bytes) => println("got \{bytes.length()} bytes")
+          None => ()
+        }
+      Err(_) => println("transfer failed")
+    }
   }
+  download()
 }
 ```
 
