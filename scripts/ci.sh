@@ -50,14 +50,8 @@ run moon update
 # ---------------------------------------------------------------------------
 run moon fmt --check
 run moon check --target native --deny-warn
-# `moon info` rewrites the generated interfaces, and a toolchain upgrade can
-# change what they say without anyone touching this repo (the `Int` -> `Int32`
-# switch on the protocol constants is the one that just happened). Failing the
-# build on that diff would make CI red for a change nobody here made, so the
-# diff is printed for review and the working tree is left as `moon info` wrote
-# it — `moon check --deny-warn` above is what fails a real API regression.
 run moon info
-run git diff pkg.generated.mbti cmd/main/pkg.generated.mbti
+run git diff --exit-code
 run git status
 
 run moon test --target native --deny-warn --enable-coverage
