@@ -17,6 +17,13 @@ priv suberror CliError {
 } derive(Debug)
 
 ///|
+/// A command line that does not parse, kept apart from `CliError` so `main`
+/// can exit 2 for a typo and 1 for a transfer that failed.
+priv suberror ParseError {
+  ParseError(String)
+} derive(Debug)
+
+///|
 async fn main {
   let args = @env.args()
   // `args[0]` is the program path; the subcommand is what the user typed.
@@ -29,18 +36,16 @@ async fn main {
     println("moon-tftp \{version}")
     return
   }
-  let command = match Command::parse(rest[0], rest[1:].to_owned()) {
-    Ok(command) => command
-    Err(CliError(message)) => {
+  let command = Command::parse(rest[0], rest[1:].to_owned()) catch {
+    ParseError(message) => {
       eprintln("error: \{message}")
       print_usage()
       exit(2)
       return
     }
   }
-  match run(command) {
-    Ok(_) => ()
-    Err(CliError(message)) => {
+  run(command) catch {
+    CliError(message) => {
       eprintln("error: \{message}")
       exit(1)
     }
@@ -89,12 +94,12 @@ priv struct ServeArgs {
 fn Command::parse(
   name : String,
   args : Array[String],
-) -> Result[Command, CliError] {
+) -> Command raise ParseError {
   match name {
-    "get" => parse_transfer("get", args).map(command => Command::Get(command))
-    "put" => parse_transfer("put", args).map(command => Command::Put(command))
-    "serve" => parse_serve(args).map(command => Command::Serve(command))
-    other => Err(CliError("unknown subcommand `\{other}`"))
+    "get" => Get(parse_transfer("get", args))
+    "put" => Put(parse_transfer("put", args))
+    "serve" => Serve(parse_serve(args))
+    other => raise ParseError("unknown subcommand `\{other}`")
   }
 }
 
@@ -106,7 +111,7 @@ fn Command::parse(
 fn parse_transfer(
   kind : String,
   args : Array[String],
-) -> Result[TransferArgs, CliError] {
+) -> TransferArgs raise ParseError {
   let positionals : Array[String] = []
   let mut options = @lib.ClientOptions::default()
   let mut i = 0
@@ -114,14 +119,10 @@ fn parse_transfer(
     let arg = args[i]
     match arg {
       "--blksize" | "--timeout" | "--retries" => {
-        let value = match next_value(args, i, arg) {
-          Ok(value) => value
-          Err(message) => return Err(message)
-        }
+        let value = next_value(args, i, arg)
         let number = match parse_int(value) {
           Some(number) => number
-          None =>
-            return Err(CliError("\{arg} expects a number, got `\{value}`"))
+          None => raise ParseError("\{arg} expects a number, got `\{value}`")
         }
         // The ranges are the RFC ones, and rejecting a value outside them
         // here is not fussiness: a peer is entitled to drop an option it
@@ -131,27 +132,23 @@ fn parse_transfer(
         options = match arg {
           "--blksize" =>
             if number < @lib.min_block_size || number > @lib.max_block_size {
-              return Err(
-                CliError(
-                  "\{arg} must be between \{@lib.min_block_size} and \{@lib.max_block_size}",
-                ),
+              raise ParseError(
+                "\{arg} must be between \{@lib.min_block_size} and \{@lib.max_block_size}",
               )
             } else {
               options.with_block_size(number)
             }
           "--timeout" =>
             if number < @lib.min_timeout || number > @lib.max_timeout {
-              return Err(
-                CliError(
-                  "\{arg} must be between \{@lib.min_timeout} and \{@lib.max_timeout} seconds",
-                ),
+              raise ParseError(
+                "\{arg} must be between \{@lib.min_timeout} and \{@lib.max_timeout} seconds",
               )
             } else {
               options.with_timeout(number)
             }
           _ =>
             if number <= 0 {
-              return Err(CliError("\{arg} must be positive"))
+              raise ParseError("\{arg} must be positive")
             } else {
               options.with_max_retries(number)
             }
@@ -164,7 +161,7 @@ fn parse_transfer(
       }
       _ =>
         if arg.has_prefix("-") {
-          return Err(CliError("unknown flag `\{arg}`"))
+          raise ParseError("unknown flag `\{arg}`")
         } else {
           positionals.push(arg)
           i = i + 1
@@ -177,10 +174,9 @@ fn parse_transfer(
     match positionals {
       [remote, remote_file] => (remote, remote_file, remote_file)
       [remote, remote_file, local_file] => (remote, remote_file, local_file)
-      [] => return Err(CliError("get needs at least <host:port> <remote>"))
-      [_] => return Err(CliError("get needs a remote file name too"))
-      _ =>
-        return Err(CliError("get takes at most <host:port> <remote> [local]"))
+      [] => raise ParseError("get needs at least <host:port> <remote>")
+      [_] => raise ParseError("get needs a remote file name too")
+      _ => raise ParseError("get takes at most <host:port> <remote> [local]")
     }
   } else {
     match positionals {
@@ -188,13 +184,12 @@ fn parse_transfer(
       // what a caller typing `put host ./boot.img` means.
       [remote, local_file] => (remote, base_name(local_file), local_file)
       [remote, local_file, remote_file] => (remote, remote_file, local_file)
-      [] => return Err(CliError("put needs at least <host:port> <local>"))
-      [_] => return Err(CliError("put needs a local file name too"))
-      _ =>
-        return Err(CliError("put takes at most <host:port> <local> [remote]"))
+      [] => raise ParseError("put needs at least <host:port> <local>")
+      [_] => raise ParseError("put needs a local file name too")
+      _ => raise ParseError("put takes at most <host:port> <local> [remote]")
     }
   }
-  Ok({ remote, remote_file, local_file, options, })
+  { remote, remote_file, local_file, options, }
 }
 
 ///|
@@ -207,7 +202,7 @@ fn base_name(path : String) -> String {
 }
 
 ///|
-fn parse_serve(args : Array[String]) -> Result[ServeArgs, CliError] {
+fn parse_serve(args : Array[String]) -> ServeArgs raise ParseError {
   let mut root = "."
   let mut port = @lib.default_port
   let mut write_policy = @lib.WritePolicy::CreateOnly
@@ -217,34 +212,31 @@ fn parse_serve(args : Array[String]) -> Result[ServeArgs, CliError] {
     let arg = args[i]
     match arg {
       "--root" | "--port" | "--max-sessions" => {
-        let value = match next_value(args, i, arg) {
-          Ok(value) => value
-          Err(message) => return Err(message)
-        }
+        let value = next_value(args, i, arg)
         match arg {
           "--root" => root = value
           "--port" =>
             match parse_int(value) {
               Some(number) =>
                 if number <= 0 || number > 65535 {
-                  return Err(CliError("--port must be between 1 and 65535"))
+                  raise ParseError("--port must be between 1 and 65535")
                 } else {
                   port = number
                 }
               None =>
-                return Err(CliError("--port expects a number, got `\{value}`"))
+                raise ParseError("--port expects a number, got `\{value}`")
             }
           _ =>
             match parse_int(value) {
               Some(number) =>
                 if number <= 0 {
-                  return Err(CliError("--max-sessions must be positive"))
+                  raise ParseError("--max-sessions must be positive")
                 } else {
                   max_sessions = number
                 }
               None =>
-                return Err(
-                  CliError("--max-sessions expects a number, got `\{value}`"),
+                raise ParseError(
+                  "--max-sessions expects a number, got `\{value}`",
                 )
             }
         }
@@ -256,15 +248,13 @@ fn parse_serve(args : Array[String]) -> Result[ServeArgs, CliError] {
       }
       _ =>
         if arg.has_prefix("-") {
-          return Err(CliError("unknown flag `\{arg}`"))
+          raise ParseError("unknown flag `\{arg}`")
         } else {
-          return Err(
-            CliError("serve takes no positional arguments (got `\{arg}`)"),
-          )
+          raise ParseError("serve takes no positional arguments (got `\{arg}`)")
         }
     }
   }
-  Ok({ root, port, write_policy, max_sessions, })
+  { root, port, write_policy, max_sessions, }
 }
 
 ///|
@@ -273,12 +263,11 @@ fn next_value(
   args : Array[String],
   index : Int32,
   flag : String,
-) -> Result[String, CliError] {
-  if index + 1 >= args.length() {
-    Err(CliError("\{flag} needs a value"))
-  } else {
-    Ok(args[index + 1])
+) -> String raise ParseError {
+  guard index + 1 < args.length() else {
+    raise ParseError("\{flag} needs a value")
   }
+  args[index + 1]
 }
 
 ///|
@@ -302,7 +291,7 @@ fn parse_int(text : String) -> Int32? {
 
 ///|
 /// Runs a parsed command.
-async fn run(command : Command) -> Result[Unit, CliError] {
+async fn run(command : Command) -> Unit raise CliError {
   match command {
     Get(args) => get(args)
     Put(args) => put(args)
@@ -312,47 +301,52 @@ async fn run(command : Command) -> Result[Unit, CliError] {
 
 ///|
 /// `get`: request a file and write it locally.
-async fn get(args : TransferArgs) -> Result[Unit, CliError] {
-  let transport = @lib.SocketTransport::new(args.remote)
+async fn get(args : TransferArgs) -> Unit raise CliError {
+  let transport = @lib.SocketTransport::new(args.remote) catch {
+    _ => raise CliError("cannot open a socket for \{args.remote}")
+  }
   defer transport.close()
   let printer = ProgressPrinter::new(args.local_file)
-  match
+  let transferred = Some(
     @lib.get_with_progress(
       transport,
       args.remote,
       args.remote_file,
       args.options,
       report => printer.report(report),
-    ) {
-    Ok(outcome) =>
-      match outcome.received() {
-        Some(payload) =>
-          match write_local(args.local_file, payload) {
-            Ok(_) => {
+    ),
+  ) catch {
+    _ => None
+  }
+  match transferred {
+    Some(transfer) =>
+      match transfer {
+        Ok(outcome) =>
+          match outcome.received() {
+            Some(payload) => {
+              write_local(args.local_file, payload)
               println(
                 "received \{payload.length()} bytes -> \{args.local_file}",
               )
-              Ok(())
             }
-            Err(error) => Err(error)
+            None => raise CliError("server sent no data")
           }
-        None => Err(CliError("server sent no data"))
+        Err(client_error) => raise CliError(describe_client_error(client_error))
       }
-    Err(error) => Err(describe_client_error(error))
+    None => raise CliError("the transfer failed")
   }
 }
 
 ///|
 /// `put`: read the file and send it to the peer.
-async fn put(args : TransferArgs) -> Result[Unit, CliError] {
-  let payload = match read_local(args.local_file) {
-    Ok(payload) => payload
-    Err(error) => return Err(error)
+async fn put(args : TransferArgs) -> Unit raise CliError {
+  let payload = read_local(args.local_file)
+  let transport = @lib.SocketTransport::new(args.remote) catch {
+    _ => raise CliError("cannot open a socket for \{args.remote}")
   }
-  let transport = @lib.SocketTransport::new(args.remote)
   defer transport.close()
   let printer = ProgressPrinter::new(args.remote_file)
-  match
+  let transferred = Some(
     @lib.put_with_progress(
       transport,
       args.remote,
@@ -360,23 +354,28 @@ async fn put(args : TransferArgs) -> Result[Unit, CliError] {
       payload,
       args.options,
       report => printer.report(report),
-    ) {
-    Ok(outcome) => {
-      // Capacity check: the peer's `tsize` is the size it agreed to store.
-      // Anything but the acknowledged wire byte count means the transfer was
-      // cut short on the far side, which stop-and-wait cannot otherwise report.
-      let acknowledged = match outcome.sent() {
-        Some(bytes) => bytes
-        None => return Err(CliError("transfer reported no acknowledged bytes"))
+    ),
+  ) catch {
+    _ => None
+  }
+  match transferred {
+    Some(transfer) =>
+      match transfer {
+        // Capacity check: the peer's `tsize` is the size it agreed to store.
+        // Anything but the acknowledged wire byte count means the transfer was
+        // cut short on the far side, which stop-and-wait cannot otherwise
+        // report.
+        Ok(outcome) =>
+          match outcome.sent() {
+            Some(acknowledged) => {
+              check_capacity(outcome.tsize(), acknowledged, args)
+              println("sent \{acknowledged} bytes -> \{args.remote_file}")
+            }
+            None => raise CliError("transfer reported no acknowledged bytes")
+          }
+        Err(client_error) => raise CliError(describe_client_error(client_error))
       }
-      match check_capacity(outcome.tsize(), acknowledged, args) {
-        Ok(_) => ()
-        Err(error) => return Err(error)
-      }
-      println("sent \{acknowledged} bytes -> \{args.remote_file}")
-      Ok(())
-    }
-    Err(error) => Err(describe_client_error(error))
+    None => raise CliError("the transfer failed")
   }
 }
 
@@ -395,19 +394,15 @@ fn check_capacity(
   negotiated : Int32?,
   sent : Int32,
   args : TransferArgs,
-) -> Result[Unit, CliError] {
+) -> Unit raise CliError {
   match negotiated {
     Some(size) =>
-      if size == sent {
-        Ok(())
-      } else {
-        Err(
-          CliError(
-            "capacity check failed: \{args.remote_file} negotiated \{size} bytes but \{sent} were sent",
-          ),
+      if size != sent {
+        raise CliError(
+          "capacity check failed: \{args.remote_file} negotiated \{size} bytes but \{sent} were sent",
         )
       }
-    None => Ok(())
+    None => ()
   }
 }
 
@@ -468,13 +463,15 @@ fn ProgressPrinter::report(
 ///
 /// All sessions live in one task group, and each one catches its own errors:
 /// a peer that disappears mid-transfer must not take the server down with it.
-async fn serve(args : ServeArgs) -> Result[Unit, CliError] {
+async fn serve(args : ServeArgs) -> Unit raise CliError {
   let files = @lib.HostFileSystem::new()
   let options = @lib.ServerOptions::default()
     .with_root(args.root)
     .with_write_policy(args.write_policy)
     .with_max_sessions(args.max_sessions)
-  let server = @socket.UdpServer(@socket.Addr::parse("0.0.0.0:\{args.port}"))
+  let server = @socket.UdpServer(@socket.Addr::parse("0.0.0.0:\{args.port}")) catch {
+    _ => raise CliError("cannot listen on \{args.port}")
+  }
   defer server.close()
   println("moon-tftp serving \{args.root} on port \{args.port}")
   let allocator = @lib.CounterTid::new(args.port + 1)
@@ -528,8 +525,9 @@ async fn serve(args : ServeArgs) -> Result[Unit, CliError] {
         @lib.Dispatch::Ignored => ()
       }
     }
-  })
-  Ok(())
+  }) catch {
+    _ => raise CliError("the accept loop on port \{args.port} stopped")
+  }
 }
 
 ///|
@@ -579,33 +577,29 @@ async fn run_session(
 
 ///|
 /// Reads a file from the host, translating an OS error into a CLI message.
-async fn read_local(path : String) -> Result[Bytes, CliError] {
-  Ok(@fs.read_file(path).binary()) catch {
-    _ => Err(CliError("cannot read \{path}"))
+async fn read_local(path : String) -> Bytes raise CliError {
+  @fs.read_file(path).binary() catch {
+    _ => raise CliError("cannot read \{path}")
   }
 }
 
 ///|
 /// Writes a file on the host, creating or truncating it.
-async fn write_local(path : String, payload : Bytes) -> Result[Unit, CliError] {
-  try {
-    @fs.write_file(path, payload)
-    Ok(())
-  } catch {
-    _ => Err(CliError("cannot write \{path}"))
+async fn write_local(path : String, payload : Bytes) -> Unit raise CliError {
+  @fs.write_file(path, payload) catch {
+    _ => raise CliError("cannot write \{path}")
   }
 }
 
 ///|
 /// The message a failed client transfer prints.
-fn describe_client_error(error : @lib.ClientError) -> CliError {
+fn describe_client_error(error : @lib.ClientError) -> String {
   match error {
     @lib.ClientError::PeerError(code, message) =>
-      CliError("peer error (\{error_code_text(code)}): \{message}")
-    @lib.ClientError::Timeout => CliError("timed out waiting for the peer")
-    @lib.ClientError::Protocol(message) =>
-      CliError("protocol error: \{message}")
-    @lib.ClientError::BadRequest(message) => CliError("bad request: \{message}")
+      "peer error (\{error_code_text(code)}): \{message}"
+    @lib.ClientError::Timeout => "timed out waiting for the peer"
+    @lib.ClientError::Protocol(message) => "protocol error: \{message}"
+    @lib.ClientError::BadRequest(message) => "bad request: \{message}"
   }
 }
 
