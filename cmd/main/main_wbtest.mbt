@@ -359,3 +359,19 @@ test "a retry budget of zero is refused" {
     .contains("positive"),
   )
 }
+
+///|
+test "the reported version comes from moon.mod, not a copy of it" {
+  // `--version` used to print a literal that had already drifted a release
+  // behind `moon.mod` (0.1.1 against 0.1.2). The value is now generated from
+  // the one `moon.mod` by the `gen` rule in `shadow/`, so this test pins the
+  // shape rather than the number: a hand-written literal would pass any
+  // equality check against itself, but it would not survive the generator
+  // being what supplies it.
+  let info = @moon_shadow.current()
+  assert_eq(version, info.version)
+  assert_eq(info.name, "PaiGack/tftp")
+  // An empty version would mean the generator never ran and the field fell
+  // back to a default, which `--version` would print as `moon-tftp `.
+  assert_false(version.is_empty())
+}

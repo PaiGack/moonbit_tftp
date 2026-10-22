@@ -5,6 +5,11 @@ import {
   "moonbitlang/async",
   "moonbitlang/async/fs",
   "moonbitlang/async/socket",
+  "PaiGack/moon_shadow",
 }
+
+options(
+  overrides: [ "PaiGack/tftp/shadow" ],
+)
 
 pkgtype(kind: "executable")
