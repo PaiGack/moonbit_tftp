@@ -276,6 +276,42 @@ check "the overwrite is a replace, not an append" \
   wait_for_size "$ROOT_DIR/uploaded.bin" "$(stat -c %s "$ROOT_DIR/hello.txt")"
 
 # ---------------------------------------------------------------------------
+# TID is a port the kernel granted, not a guess
+#
+# The server used to answer on `port + 1`, `port + 2`, ... which is a guess: a
+# neighbour that happened to be taken made the session socket fail to bind, the
+# accept loop swallowed the error, and the client saw nothing but silence until
+# its retransmission budget ran out. Occupying every port the old counter would
+# have picked is the check that the failure mode is actually gone: with a real
+# ephemeral bind the transfer still completes, because the kernel never hands
+# out a port that is busy.
+# ---------------------------------------------------------------------------
+step "ephemeral TID"
+HOLDER="$WORK/hold_ports.py"
+cat > "$HOLDER" <<'HOLD_PORTS'
+import socket, sys, time
+held = []
+for port in range(int(sys.argv[1]), int(sys.argv[2]) + 1):
+    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    try:
+        sock.bind(("127.0.0.1", port))
+        held.append(sock)
+    except OSError:
+        pass
+print("holding", len(held), "ports", flush=True)
+time.sleep(120)
+HOLD_PORTS
+python3 "$HOLDER" $((PORT + 1)) $((PORT + 16)) >"$WORK/holder.log" 2>&1 &
+HOLDER_PID=$!
+sleep 0.5
+expect_success "a transfer still completes while every counter-picked port is busy" \
+  "$CLI" get "$REMOTE" blob.bin "$WORK/hold.out"
+check "the transfer under a busy port table matches byte for byte" \
+  cmp "$ROOT_DIR/blob.bin" "$WORK/hold.out"
+kill "$HOLDER_PID" 2>/dev/null
+wait "$HOLDER_PID" 2>/dev/null
+
+# ---------------------------------------------------------------------------
 # Exit codes
 # ---------------------------------------------------------------------------
 step "exit codes"

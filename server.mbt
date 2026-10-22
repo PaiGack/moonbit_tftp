@@ -1071,7 +1071,11 @@ pub extend Dispatch with @moonbitlang/core/debug.Debug::{to_repr}
 /// interface is the same either way.
 pub trait TidAllocator {
   /// A fresh TID for a request that arrived from `peer`.
-  fn allocate(Self, peer : String) -> String
+  ///
+  /// Async because a TID that is a *real* port has to be bound before it can be
+  /// promised: `EphemeralTid` asks the kernel for one and holds the socket, and
+  /// that bind is an await.
+  async fn allocate(Self, peer : String) -> String
 }
 
 ///|
@@ -1182,7 +1186,7 @@ pub fn[A] Dispatcher::release(self : Dispatcher[A]) -> Unit {
 /// rather than started: the ceiling is the whole point of the field, and a
 /// session that is silently dropped leaves the client retransmitting into the
 /// void. The refusal is an ERROR 4, the RFC's one code for "not right now".
-pub fn[A : TidAllocator] Dispatcher::route(
+pub async fn[A : TidAllocator] Dispatcher::route(
   self : Dispatcher[A],
   datagram : Datagram,
 ) -> Dispatch {
@@ -1258,4 +1262,150 @@ fn decode_error_text(reason : DecodeError) -> String {
     FieldTooLong => "field too long"
     Unsupported(value) => "unsupported mode \{value}"
   }
+}
+
+///|
+/// An allocator that leases each TID from the kernel: it binds port 0 on the
+/// peer's host and keeps that socket, so the port it hands out is one the
+/// kernel reported as free.
+///
+/// This is the allocator the CLI runs. `CounterTid` derives TIDs from the
+/// request port, which is enough for a test but says nothing about whether the
+/// port is free: `port + 1` may belong to another process, and then the session
+/// socket cannot bind it and the request goes unanswered. Here the port is not
+/// guessed, it is granted.
+///
+/// The lease is what makes the port a *real* transfer id rather than a lucky
+/// number: the socket stays bound between the allocate and the session that
+/// answers on it, so nothing else can take the port in between. Releasing the
+/// lease is therefore not cleanup, it is the handover — `take` closes the
+/// socket and lets the session bind the address it was granted.
+pub struct EphemeralTid {
+  /// Host the TID is bound on: the address the request arrived on, so the reply
+  /// leaves from an address the peer can reach it at. An IPv4 wildcard (`0.0.0.0`
+  /// or the empty host) has no answer for "which address", so it falls back to
+  /// the host the peer used.
+  bind_host : String
+  /// The bound sockets, by the TID they hold.
+  leases : Map[String, @socket.UdpServer]
+}
+
+///|
+/// An allocator that leases a kernel-chosen port per request.
+///
+/// `bind_host` is the address to bind on; an empty string, or the IPv4 wildcard,
+/// means "the host the peer addressed", which is the only choice that also works
+/// for a peer on the wildcardless side of a multi-homed host.
+pub fn EphemeralTid::new(bind_host : String) -> EphemeralTid {
+  { bind_host, leases: {}, }
+}
+
+///|
+/// The host part of `peer`, without its port.
+///
+/// The same two rules `CounterTid` applies, and for the same reason: only the
+/// last colon-separated field goes, and brackets stay, so `[::1]:1000` gives
+/// back `[::1]` rather than a mangled `[::1]:1000`.
+fn host_of(peer : String) -> String {
+  if peer.has_prefix("[") {
+    match peer.find("]:") {
+      Some(index) => peer[:index + 1].to_owned()
+      None => peer
+    }
+  } else {
+    match peer.find(":") {
+      Some(index) => peer[:index].to_owned()
+      None => peer
+    }
+  }
+}
+
+///|
+/// Whether `host` is one we cannot bind a reply from: empty, or a wildcard.
+///
+/// A wildcard is not an address this host has, it is the absence of one. A
+/// TID bound to it would answer from a source address the kernel picks, which
+/// for a client on a specific interface looks like a stranger answering and is
+/// dropped. Binding the host the request came in on is the same socket with an
+/// answer for "from where".
+fn is_wildcard_host(host : String) -> Bool {
+  host.is_empty() || host == "0.0.0.0" || host == "[::]" || host == "::"
+}
+
+///|
+pub extend EphemeralTid with TidAllocator::{allocate}
+
+///|
+/// Binds port 0, keeps the socket, and returns the address the kernel gave.
+///
+/// A failed bind is the one thing this allocator cannot paper over: it has no
+/// port to offer, and handing back a guessed number would recreate exactly the
+/// silent failure it exists to remove. The dispatcher has no error channel to
+/// report it through, so the floor is the empty-host port 0 — an address no
+/// session can bind — rather than an invented number that may belong to
+/// someone else. The peer's host is kept so the log line still names who was
+/// not answered.
+pub impl TidAllocator for EphemeralTid with fn allocate(self, peer) {
+  let peer_host = host_of(peer)
+  let host = if is_wildcard_host(self.bind_host) {
+    peer_host
+  } else {
+    self.bind_host
+  }
+  let bound = try @socket.UdpServer(@socket.Addr::parse("\{host}:0")) catch {
+    _ => None
+  } noraise {
+    socket => Some(socket)
+  }
+  match bound {
+    Some(socket) => {
+      let tid = socket.addr.to_string()
+      self.leases[tid] = socket
+      tid
+    }
+    None =>
+      // An empty host with port 0 is not an address anything can be sent to,
+      // so the session that ends up with it fails loudly instead of quietly
+      // taking a port someone else holds.
+      ":0"
+  }
+}
+
+///|
+/// Closes the lease on `tid` and hands the port on to whoever binds it next.
+///
+/// The lease is what made the port the kernel's answer rather than a guess, and
+/// it has done its job once the request is routed: the session that answers on
+/// this TID binds the address in the next tick, and holding the socket any
+/// longer would only mean nothing else can use the port until then.
+///
+/// `false` means this allocator never handed the TID out (or it was already
+/// taken): the caller has nothing to answer on, and saying so is better than
+/// pretending a port was granted.
+pub fn EphemeralTid::take(self : EphemeralTid, tid : String) -> Bool {
+  match self.leases.get(tid) {
+    Some(socket) => {
+      self.leases.remove(tid)
+      socket.close()
+      true
+    }
+    None => false
+  }
+}
+
+///|
+/// How many TIDs are leased right now, for tests and for a log line that wants
+/// to say the server is holding ports.
+pub fn EphemeralTid::leased(self : EphemeralTid) -> Int32 {
+  self.leases.length()
+}
+
+///|
+/// Closes every lease, for a shutdown that must not leak ports.
+pub fn EphemeralTid::close(self : EphemeralTid) -> Unit {
+  for tid, socket in self.leases {
+    ignore(tid)
+    socket.close()
+  }
+  self.leases.clear()
 }

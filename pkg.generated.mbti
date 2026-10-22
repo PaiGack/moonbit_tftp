@@ -147,7 +147,7 @@ pub fn ClientOptions::with_timeout(Self, Int32) -> Self
 pub struct CounterTid {
   mut next_port : Int32
 } derive(@debug.Debug)
-pub fn CounterTid::allocate(Self, String) -> String
+pub async fn CounterTid::allocate(Self, String) -> String
 pub fn CounterTid::new(Int32) -> Self
 pub fn CounterTid::to_repr(Self) -> @debug.Repr
 pub impl TidAllocator for CounterTid
@@ -192,9 +192,20 @@ pub struct Dispatcher[A] {
 pub fn[A] Dispatcher::active(Self[A]) -> Int32
 pub fn[A] Dispatcher::new(A, Int32) -> Self[A]
 pub fn[A] Dispatcher::release(Self[A]) -> Unit
-pub fn[A : TidAllocator] Dispatcher::route(Self[A], Datagram) -> Dispatch
+pub async fn[A : TidAllocator] Dispatcher::route(Self[A], Datagram) -> Dispatch
 pub fn[A] Dispatcher::started(Self[A]) -> Int32
 pub fn[A : @debug.Debug] Dispatcher::to_repr(Self[A]) -> @debug.Repr
+
+pub struct EphemeralTid {
+  bind_host : String
+  leases : Map[String, @socket.UdpServer]
+}
+pub async fn EphemeralTid::allocate(Self, String) -> String
+pub fn EphemeralTid::close(Self) -> Unit
+pub fn EphemeralTid::leased(Self) -> Int32
+pub fn EphemeralTid::new(String) -> Self
+pub fn EphemeralTid::take(Self, String) -> Bool
+pub impl TidAllocator for EphemeralTid
 
 pub(all) enum ErrorCode {
   Undefined
@@ -529,7 +540,7 @@ pub(open) trait FileSystem {
 }
 
 pub trait TidAllocator {
-  fn allocate(Self, String) -> String
+  async fn allocate(Self, String) -> String
 }
 
 pub(open) trait Transport {
