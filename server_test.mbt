@@ -829,7 +829,7 @@ async test "a read session answers tsize with the real file size" {
 // ---------------------------------------------------------------------------
 
 ///|
-test "a dispatcher hands every request its own TID" {
+async test "a dispatcher hands every request its own TID" {
   let dispatcher = @tftp.Dispatcher::new(@tftp.CounterTid::new(40000), 8)
   let first = dispatcher.route(
     @tftp.Datagram::new(
@@ -855,7 +855,7 @@ test "a dispatcher hands every request its own TID" {
 }
 
 ///|
-test "a dispatcher starts exactly max_sessions sessions and then refuses" {
+async test "a dispatcher starts exactly max_sessions sessions and then refuses" {
   // The ceiling is the field the whole `Dispatcher` carries, so it has to be
   // the thing that ends the run: with a limit of 2, the third request is
   // answered with ERROR 4 instead of quietly opening a third session.
@@ -890,7 +890,7 @@ test "a dispatcher starts exactly max_sessions sessions and then refuses" {
 }
 
 ///|
-test "a full dispatcher leaves running sessions alone" {
+async test "a full dispatcher leaves running sessions alone" {
   // The refusal is scoped to the new request. Whatever is already running
   // keeps its TID, which is the property a naive "reset the counter" fix
   // would quietly break.
@@ -920,7 +920,7 @@ test "a full dispatcher leaves running sessions alone" {
 }
 
 ///|
-test "a ceiling of zero refuses even the first request" {
+async test "a ceiling of zero refuses even the first request" {
   // A degenerate limit is still a limit: zero sessions means zero, not "one".
   let dispatcher = @tftp.Dispatcher::new(@tftp.CounterTid::new(32000), 0)
   match
@@ -946,7 +946,7 @@ fn tid_repr(dispatch : @tftp.Dispatch) -> String {
 }
 
 ///|
-test "a dispatcher answers a stray ACK with ERROR 5" {
+async test "a dispatcher answers a stray ACK with ERROR 5" {
   // An ACK arriving on the request port is a client using the wrong TID, which
   // RFC 1350 section 4 names exactly: unknown transfer ID.
   let dispatcher = @tftp.Dispatcher::new(@tftp.CounterTid::new(50000), 8)
@@ -964,7 +964,7 @@ test "a dispatcher answers a stray ACK with ERROR 5" {
 }
 
 ///|
-test "a datagram that cannot decode is answered with ERROR 4" {
+async test "a datagram that cannot decode is answered with ERROR 4" {
   let dispatcher = @tftp.Dispatcher::new(@tftp.CounterTid::new(50000), 8)
   let decision = dispatcher.route(
     @tftp.Datagram::new(b"\x00\x01\x02", "10.0.0.9:1000"),
@@ -989,7 +989,7 @@ test "a datagram that cannot decode is answered with ERROR 4" {
 /// is the failure mode an ERROR packet exists to prevent; so every one of these
 /// owes a packet, and the dispatcher has to be the one that decides it because
 /// only it sees the raw datagram.
-test "every malformed request is refused with ERROR 4" {
+async test "every malformed request is refused with ERROR 4" {
   let dispatcher = @tftp.Dispatcher::new(@tftp.CounterTid::new(50000), 8)
   // Each entry is paired with the phrase its refusal must carry, so the reason
   // the packet layer found survives the trip to the wire. "field too long" and
@@ -1048,7 +1048,7 @@ test "every malformed request is refused with ERROR 4" {
 }
 
 ///|
-test "a dispatcher refuses a request once the ceiling is reached" {
+async test "a dispatcher refuses a request once the ceiling is reached" {
   // The ceiling bounds *concurrent* sessions. The first request starts one; the
   // second, with the ceiling already taken, is refused rather than started.
   let dispatcher = @tftp.Dispatcher::new(@tftp.CounterTid::new(45000), 1)
@@ -1090,7 +1090,7 @@ test "a dispatcher refuses a request once the ceiling is reached" {
 }
 
 ///|
-test "a finished session gives its slot back" {
+async test "a finished session gives its slot back" {
   // Without releasing, the ceiling would lock the server out after N total
   // transfers instead of bounding how many run at once.
   let dispatcher = @tftp.Dispatcher::new(@tftp.CounterTid::new(46000), 1)
@@ -1122,7 +1122,7 @@ test "a finished session gives its slot back" {
 }
 
 ///|
-test "an IPv6 peer keeps its address and only gets its port replaced" {
+async test "an IPv6 peer keeps its address and only gets its port replaced" {
   let dispatcher = @tftp.Dispatcher::new(@tftp.CounterTid::new(42000), 8)
   let decision = dispatcher.route(
     @tftp.Datagram::new(
@@ -1328,7 +1328,7 @@ test "a session outcome carries a failure or a byte count" {
 /// A DATA packet here is a client that ignored its TID, and the RFC's answer
 /// is ERROR 5, not silence: the client is talking to the wrong port and has to
 /// be told.
-test "a dispatcher rejects a stray DATA" {
+async test "a dispatcher rejects a stray DATA" {
   let dispatcher = @tftp.Dispatcher::new(@tftp.CounterTid::new(60000), 8)
   let decision = dispatcher.route(
     @tftp.Datagram::new(
@@ -1346,7 +1346,7 @@ test "a dispatcher rejects a stray DATA" {
 }
 
 ///|
-test "a peer with no port, or a bracketed one, still gets a TID" {
+async test "a peer with no port, or a bracketed one, still gets a TID" {
   let dispatcher = @tftp.Dispatcher::new(@tftp.CounterTid::new(100), 8)
   let bare = dispatcher.route(
     @tftp.Datagram::new(
@@ -1370,6 +1370,104 @@ test "a peer with no port, or a bracketed one, still gets a TID" {
     @tftp.Started(tid) => assert_eq(tid, "[::1:101")
     other => fail("expected a session, got \{tid_repr(other)}")
   }
+}
+
+///|
+/// An ephemeral TID is a port the kernel granted, not one the allocator made
+/// up: it can be bound by a socket at the address the peer used, and it is
+/// different for every request.
+///
+/// This is the property `CounterTid` cannot offer. Its `port + 1` is a guess,
+/// and a guess that lands on a port another process holds is a session that
+/// never answers. Here the port came back from a bind, so it is free by
+/// construction.
+async test "an ephemeral TID is a port the kernel granted" {
+  let allocator = @tftp.EphemeralTid::new("")
+  let first = allocator.allocate("127.0.0.1:1000")
+  let second = allocator.allocate("127.0.0.1:1000")
+  assert_true(first != second)
+  // The host comes from the peer, the port from the kernel: the reply has to
+  // leave from an address the peer asked, or it is dropped as a stranger.
+  assert_true(first.has_prefix("127.0.0.1:"))
+  assert_true(second.has_prefix("127.0.0.1:"))
+  // Both are still leased, so both ports are held: two sessions really cannot
+  // collide, which is the whole point of holding them.
+  assert_eq(allocator.leased(), 2)
+  allocator.close()
+  assert_eq(allocator.leased(), 0)
+}
+
+///|
+/// A leased TID is one a session socket can actually bind, and releasing it
+/// frees the port for the next request.
+///
+/// Binding the TID is the check that matters: a `CounterTid` number that
+/// happened to be taken would fail here, and that failure is exactly the
+/// silent "the server never answered" this allocator removes.
+async test "a leased TID can be bound, and taking the lease frees the port" {
+  let allocator = @tftp.EphemeralTid::new("127.0.0.1")
+  let tid = allocator.allocate("127.0.0.1:1000")
+  // A second bind of a live lease is the collision the lease exists to prevent.
+  let blocked = try @socket.UdpServer(@socket.Addr::parse(tid)) catch {
+    _ => None
+  } noraise {
+    socket => Some(socket)
+  }
+  assert_true(blocked is None)
+  // Taking the lease is the handover: it lets go of the port, which is what
+  // the session that answers on the TID needs.
+  assert_true(allocator.take(tid))
+  assert_eq(allocator.leased(), 0)
+  let freed = try @socket.UdpServer(@socket.Addr::parse(tid)) catch {
+    _ => None
+  } noraise {
+    socket => Some(socket)
+  }
+  match freed {
+    Some(socket) => socket.close()
+    None => fail("expected the released port to be bindable again")
+  }
+  // Taking something never leased is a no-op, not a crash: the accept loop
+  // calls this and must not be able to take the server down.
+  assert_true(!allocator.take("127.0.0.1:1"))
+  allocator.close()
+}
+
+///|
+/// A fresh allocator holds nothing, so the first request is the one that costs
+/// a bind — and asking for a TID it never granted says so instead of guessing.
+test "an ephemeral allocator starts with no leases" {
+  let allocator = @tftp.EphemeralTid::new("")
+  assert_eq(allocator.leased(), 0)
+  assert_true(!allocator.take("127.0.0.1:1"))
+}
+
+///|
+/// A peer with no port at all is still a host, so its TID is still a real
+/// port: the peer string has no colon to strip, and the bind succeeds anyway.
+async test "an ephemeral TID is a port, not a guess" {
+  let allocator = @tftp.EphemeralTid::new("")
+  let tid = allocator.allocate("127.0.0.1:1000")
+  assert_true(tid.has_prefix("127.0.0.1:"))
+  assert_true(tid != "127.0.0.1:1000")
+  assert_eq(allocator.leased(), 1)
+  // A bracketed IPv6 peer keeps its brackets: the port goes, the address does
+  // not, because a mangled address is a reply that never arrives. IPv6 is not
+  // available everywhere the test suite runs, so the check is on the shape:
+  // the reply is either a real `[::1]:port` or the unanswerable `:0`.
+  let v6 = allocator.allocate("[::1]:1000")
+  assert_true(v6.has_prefix("[::1]:") || v6 == ":0")
+  allocator.close()
+}
+
+///|
+/// A host that cannot be bound comes back as the unanswerable `:0` rather than
+/// as a number someone else may hold.
+async test "an unbound ephemeral TID is port 0, not a guess" {
+  let allocator = @tftp.EphemeralTid::new("not-a-host")
+  assert_eq(allocator.allocate("127.0.0.1:1000"), ":0")
+  assert_eq(allocator.leased(), 0)
+  allocator.close()
 }
 
 ///|

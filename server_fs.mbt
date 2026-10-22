@@ -140,6 +140,13 @@ pub struct SocketSession {
 
 ///|
 /// Binds a session socket to `local` and locks it onto `peer`.
+///
+/// The peer has to be locked on, and locking a socket onto a peer is the
+/// awaited `connect` — which is why this is async, and why the caller hands
+/// over an address rather than a socket. A server whose TID is an ephemeral
+/// lease (`EphemeralTid`) does exactly the same thing on the socket the kernel
+/// granted, one bind earlier: the lease has to be released before the session
+/// takes the port, and a rebind of a released port is the same call.
 pub async fn SocketSession::new(
   bind_to : String,
   peer : String,

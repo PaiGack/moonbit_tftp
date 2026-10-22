@@ -116,5 +116,5 @@ UDP 收发基于 `moonbitlang/async` 的 `socket` 包，不自行编写底层绑
 内存文件系统上跑完整读 / 写全流程，含 netascii 双向
 （读编码 / 写解码、行尾跨块、流尾孤立 `\r`） |
 | 并发 | 多会话并行跑，断言各自的文件互不串扰 |
-| TID | `Dispatcher` 对请求 / 错位报文 / 畸形报文的三种判定 |
+| TID | `Dispatcher` 对请求 / 错位报文 / 畸形报文的三种判定；`EphemeralTid` 的 TID 来自真实 ephemeral bind（lease 期间该端口不可再被绑定，release 后可绑定），即「端口由内核授予」而非猜测 |
 | 会话上限 | 达到 `max_sessions` 后新请求回 ERROR 4，已有会话的 TID 不受影响 |
