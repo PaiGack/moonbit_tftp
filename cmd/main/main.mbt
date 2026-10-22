@@ -461,6 +461,13 @@ fn ProgressPrinter::report(
 /// the TID it was allocated, so two concurrent transfers never see each
 /// other's packets (RFC 1350, section 4).
 ///
+/// The TID is a port the kernel granted (`EphemeralTid` binds port 0 and keeps
+/// the socket), not `port + 1`. The difference is not cosmetic: a guessed port
+/// can belong to another process, and the session that cannot bind it answers
+/// nobody — the client just retransmits into the void until it gives up. A
+/// granted port is free by construction, and holding its socket until the
+/// session ends is what keeps it free until then.
+///
 /// All sessions live in one task group, and each one catches its own errors:
 /// a peer that disappears mid-transfer must not take the server down with it.
 async fn serve(args : ServeArgs) -> Unit raise CliError {
@@ -474,7 +481,12 @@ async fn serve(args : ServeArgs) -> Unit raise CliError {
   }
   defer server.close()
   println("moon-tftp serving \{args.root} on port \{args.port}")
-  let allocator = @lib.CounterTid::new(args.port + 1)
+  // Each TID is a port the kernel grants and the server holds until the
+  // session ends, so a busy neighbouring port is not a session that silently
+  // never answers. The empty bind host means "the address the request came in
+  // on": a TID has to answer from an address the peer can hear, and the
+  // wildcard the request socket listens on is not one of them.
+  let allocator = @lib.EphemeralTid::new("")
   let dispatcher = @lib.Dispatcher::new(allocator, args.max_sessions)
   let buffer = FixedArray::make(65536, b'\x00')
   @async.with_task_group(group => {
@@ -487,8 +499,11 @@ async fn serve(args : ServeArgs) -> Unit raise CliError {
         // packet is in hand: decoding it a second time here would be work the
         // decision above already did.
         @lib.Dispatch::Started(tid) =>
-          match @lib.decode(payload) {
-            Ok(packet) => {
+          match (allocator.take(tid), @lib.decode(payload)) {
+            // Ending the lease is what frees the port for the session that is
+            // about to bind it: the address came from the kernel, so nothing
+            // else can be sitting on it in between.
+            (true, Ok(packet)) => {
               println("session \{tid} for \{peer}")
               group.spawn_bg() <| () => {
                 // Swallow everything: the session's failure is reported in
@@ -511,15 +526,24 @@ async fn serve(args : ServeArgs) -> Unit raise CliError {
               }
             }
             // Unreachable: a session is only started for a datagram that
-            // decoded, and the dispatcher is the one that decoded it.
-            Err(_) => ()
+            // decoded, and the dispatcher is the one that decoded it. The
+            // matching `allocator.take` above already ended the lease.
+            (_, Err(_)) => ()
+            // Unreachable: a TID comes from the allocator that just leased it.
+            (false, Ok(_)) => ()
           }
         @lib.Dispatch::Rejected(tid~, error~) =>
-          // A refused request still gets an answer on the client's own port:
-          // ERROR 5 for a client on the wrong TID, ERROR 4 when the session
-          // ceiling is full or the request was malformed. The dispatcher
-          // already decided which, and the reason travels with the decision.
-          reject_session(tid, peer, error.error_code(), error.message())
+          // A refused request still gets an answer from a fresh TID: ERROR 5
+          // for a client on the wrong TID, ERROR 4 when the session ceiling is
+          // full or the request was malformed. The dispatcher already decided
+          // which, and the reason travels with the decision.
+          reject_session(
+            allocator,
+            tid,
+            peer,
+            error.error_code(),
+            error.message(),
+          )
         // Unreachable: the dispatcher refuses what it cannot decode, so it has
         // no "neither" answer to give. Kept so the match stays total.
         @lib.Dispatch::Ignored => ()
@@ -535,22 +559,29 @@ async fn serve(args : ServeArgs) -> Unit raise CliError {
 /// refuses before a session exists (a client on the wrong TID, or a request
 /// past the session ceiling).
 ///
+/// The TID is taken for exactly this packet: the port the kernel granted is
+/// used for the ERROR and nothing else, so a refusal costs one port for one
+/// datagram instead of leaving one bound for a session that never started.
+///
 /// A socket that cannot be opened or written is not worth failing over: the
 /// peer is already being told "no", and a second failure is just the same
 /// silence with extra noise in the log.
 async fn reject_session(
+  allocator : @lib.EphemeralTid,
   tid : String,
   peer : String,
   code : @lib.ErrorCode,
   message : String,
 ) -> Unit {
-  try {
-    let socket = @lib.SocketSession::new(tid, peer)
-    let error = @lib.peer_error(code, message)
-    socket.send(@lib.encode(@lib.to_error_packet(error)))
-    socket.close()
-  } catch {
-    _ => ()
+  if allocator.take(tid) {
+    try {
+      let session = @lib.SocketSession::new(tid, peer)
+      let error = @lib.peer_error(code, message)
+      session.send(@lib.encode(@lib.to_error_packet(error)))
+      session.close()
+    } catch {
+      _ => ()
+    }
   }
 }
 
