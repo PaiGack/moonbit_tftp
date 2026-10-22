@@ -107,7 +107,8 @@ fn Command::parse(
 /// Parses the `get` / `put` argument list.
 ///
 /// `get host:port remote [local]`: a third positional names the local file;
-/// otherwise the download lands under the remote's own name.
+/// otherwise the download keeps the remote's base name, the same rule `put`
+/// applies in the other direction.
 fn parse_transfer(
   kind : String,
   args : Array[String],
@@ -172,7 +173,10 @@ fn parse_transfer(
   // parser keeps them apart instead of pretending one shape fits both.
   let (remote, remote_file, local_file) = if kind == "get" {
     match positionals {
-      [remote, remote_file] => (remote, remote_file, remote_file)
+      // Without a local name the download keeps the remote's base name, which
+      // is what a caller typing `get host sub/a.txt` means: the file lands as
+      // `a.txt` here, not in a `sub/` directory the caller never made.
+      [remote, remote_file] => (remote, remote_file, base_name(remote_file))
       [remote, remote_file, local_file] => (remote, remote_file, local_file)
       [] => raise ParseError("get needs at least <host:port> <remote>")
       [_] => raise ParseError("get needs a remote file name too")
@@ -193,11 +197,30 @@ fn parse_transfer(
 }
 
 ///|
-/// The last path segment, so `put host ./dir/boot.img` stores `boot.img`.
+/// The last path segment, so `put host ./dir/boot.img` stores `boot.img` and
+/// `get host sub/a.txt` writes `a.txt`.
+///
+/// Both directions use this one rule: a name without a directory separator is
+/// its own base name, and the directory part of a name is only ever the
+/// *remote* side's business.
 fn base_name(path : String) -> String {
   match path.rev_find("/") {
     Some(index) => path[index + 1:].to_owned()
     None => path
+  }
+}
+
+///|
+/// Everything before the last separator, or `None` for a name in the current
+/// directory, so `out/a.txt` names `out` and `a.txt` asks for nothing.
+///
+/// The separator is kept on the returned prefix: `./out/a.txt` names `./out/`,
+/// which is a directory even though `./out` might not be one.
+fn parent_dir(path : String) -> String? {
+  match path.rev_find("/") {
+    Some(0) => Some("/")
+    Some(index) => Some(path[:index + 1].to_owned())
+    None => None
   }
 }
 
@@ -616,7 +639,35 @@ async fn read_local(path : String) -> Bytes raise CliError {
 
 ///|
 /// Writes a file on the host, creating or truncating it.
+///
+/// A local name may carry a directory (`get host f out/f`, `get host f
+/// ./x/y/f`), and `get` is not a `mkdir` prompt: creating those directories is
+/// what the caller meant, and the alternative is a fully downloaded file
+/// thrown away over a missing `out/`. A directory that cannot be created is
+/// still an error, and it is reported as one.
 async fn write_local(path : String, payload : Bytes) -> Unit raise CliError {
+  match parent_dir(path) {
+    // A local name may carry a directory (`get host f out/f`), and `get` is
+    // not a `mkdir` prompt: creating the missing directories is what the
+    // caller meant. Two details the obvious one-liner gets wrong: the
+    // existence check has to come first, because `@fs.mkdir` reports EEXIST
+    // for a directory that is already there rather than shrugging at it, and
+    // the trailing separator is trimmed, because `out/` and `out` are the same
+    // directory but not the same string to the retry inside `mkdir`. The
+    // failure is reported here, with the directory named, instead of surfacing
+    // as a bare "cannot write" from the write that fails next.
+    Some(directory) => {
+      let directory = directory.trim_end(chars="/")
+      let exists = directory.is_empty() ||
+        (@fs.exists(directory) catch { _ => false })
+      if !exists {
+        @fs.mkdir(directory, recursive=true) catch {
+          e => raise CliError("cannot create the directory \{directory}: \{e}")
+        }
+      }
+    }
+    None => ()
+  }
   @fs.write_file(path, payload) catch {
     _ => raise CliError("cannot write \{path}")
   }

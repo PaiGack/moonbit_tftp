@@ -81,12 +81,27 @@ moon run cmd/main -- serve --root ./tftpboot --port 6969 --allow-overwrite
 # 把服务器上的 boot.img 下载到本地同名文件
 moon run cmd/main -- get 192.168.1.10:69 boot.img
 
+# 远端在子目录里时，本地取最后一段文件名：落盘为 a.txt，不是 sub/a.txt
+moon run cmd/main -- get 192.168.1.10:69 sub/a.txt
+
 # 指定本地落盘路径，并协商 1428 字节块
 moon run cmd/main -- get 192.168.1.10:69 boot.img ./downloads/boot.img --blksize 1428
 
 # 文本文件用 netascii 模式
 moon run cmd/main -- get 192.168.1.10:69 config.txt --netascii
 ```
+
+第三个位置参数省略时，本地文件名取**远端名的最后一段**（basename），
+与 `put` 省略远端名时取本地 basename 是同一条规则，两边对称：
+
+| 命令 | 远端名 | 本地落盘 |
+| --- | --- | --- |
+| `get h:69 boot.img` | `boot.img` | `boot.img` |
+| `get h:69 sub/a.txt` | `sub/a.txt` | `a.txt` |
+| `get h:69 sub/a.txt out/a.txt` | `sub/a.txt` | `out/a.txt`（写死的，按原样用） |
+
+显式给出的本地路径按原样使用；其中的父目录不存在时会自动创建，
+所以 `get h:69 boot.img out/boot.img` 不需要先 `mkdir out`。
 
 ### 上传（put）
 
