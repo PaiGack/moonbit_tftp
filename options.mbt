@@ -69,8 +69,15 @@ pub let min_block_size : Int32 = 8
 ///|
 /// Largest `blksize` a peer may ask for.
 ///
-/// A DATA payload has to fit a u16 block number plus a 4-byte header, so the
-/// ceiling is 65535 - 4 = 65464, not 65535 (RFC 2348, section 3).
+/// 65464 is the number RFC 2348 section 3 fixes, not a value derived here: a
+/// DATA payload plus its 4-byte header (2-byte opcode + 2-byte block number)
+/// has to fit a 65535-byte UDP datagram, and the RFC writes the resulting
+/// ceiling out as 65464.
+///
+/// The bound only limits one packet, so it never overruns an OACK: the longest
+/// OACK this module can build — `blksize=65464`, `timeout=255` and
+/// `tsize=2147483647` — is 45 bytes, far below any datagram limit. There is no
+/// room to "optimize" the constant in either direction.
 pub let max_block_size : Int32 = 65464
 
 ///|

@@ -49,8 +49,8 @@ test "blksize is accepted and echoed in the OACK (RFC 2348)" {
 
 ///|
 test "blksize accepts the whole legal range (RFC 2348 section 3)" {
-  // 8 and 65464 are the inclusive bounds; the ceiling is not 65535 because a
-  // u16 block number plus the 4-byte header has to fit in the same packet.
+  // 8 and 65464 are the inclusive bounds RFC 2348 section 3 names: a DATA
+  // payload plus its 4-byte header has to fit one 65535-byte datagram.
   for size in [@tftp.min_block_size, 512, 1428, @tftp.max_block_size] {
     let parsed = @tftp.parse_options(request([("blksize", size.to_string())])).unwrap()
     assert_eq(parsed.options().length(), 1)
@@ -406,6 +406,59 @@ test "the error text names the option and the value" {
     @tftp.negotiation_error_packet(@tftp.NegotiationError::BadTsize("0")),
     @tftp.Packet::Error(@tftp.ErrorCode::OptionNegotiationFailed, "tsize=0"),
   )
+}
+
+///|
+test "the largest blksize OACK is 16 bytes (RFC 2348 section 3)" {
+  // `blksize=65464` is the value people reach for when they want to shrink
+  // `max_block_size`, on the theory that the option text must be about to
+  // overrun a datagram. It is not: the whole OACK is opcode 2 + "blksize" 7+1
+  // + "65464" 5+1. Pinning the number here keeps that theory from turning into
+  // a "fix" that lowers the ceiling and slows every large transfer down.
+  let parsed = @tftp.parse_options(
+    request([("blksize", @tftp.max_block_size.to_string())]),
+  ).unwrap()
+  let options = @tftp.resolve_options(parsed, accept_all).unwrap()
+  assert_eq(options.blksize(), @tftp.max_block_size)
+  let packet = options.oack_packet().unwrap()
+  assert_eq(@tftp.encode(packet).length(), 16)
+  // A DATA payload at that size is 65468 bytes on the wire: still inside the
+  // 65535-byte datagram `blksize` was chosen against.
+  let data = @tftp.Packet::Data(
+    1,
+    Bytes::make((@tftp.max_block_size : Int32), b'x'),
+  )
+  assert_eq(@tftp.encode(data).length(), 65468)
+}
+
+///|
+test "an OACK carrying every option at its maximum is 45 bytes" {
+  // `blksize=65464` + `timeout=255` + `tsize=2147483647` is the widest OACK
+  // this module can produce: 2 + (7+1+5+1) + (7+1+3+1) + (5+1+10+1) = 45.
+  // Whatever `max_block_size`, `max_timeout` and `max_tsize` become, this
+  // stays a 45-byte packet, so no option ceiling has to shrink to keep the
+  // negotiation inside one datagram.
+  let packet = @tftp.Packet::Wrq("upload.bin", @tftp.Mode::Octet, [
+    @tftp.TftpOption::new("blksize", @tftp.max_block_size.to_string()),
+    @tftp.TftpOption::new("timeout", @tftp.max_timeout.to_string()),
+    @tftp.TftpOption::new("tsize", "2147483647"),
+  ])
+  let parsed = @tftp.parse_options(packet).unwrap()
+  assert_eq(parsed.tsize_hint(), Some(@tftp.max_tsize))
+  let options = @tftp.resolve_options(parsed, accept_all).unwrap()
+  assert_eq(options.tsize(), Some(@tftp.max_tsize))
+  let oack = options.oack_packet().unwrap()
+  assert_eq(
+    @tftp.encode(oack),
+    wire([
+      0x00, 0x06, b'b', b'l', b'k', b's', b'i', b'z', b'e', 0x00, b'6', b'5', b'4',
+      b'6', b'4', 0x00, b't', b'i', b'm', b'e', b'o', b'u', b't', 0x00, b'2', b'5',
+      b'5', 0x00, b't', b's', b'i', b'z', b'e', 0x00, b'2', b'1', b'4', b'7', b'4',
+      b'8', b'3', b'6', b'4', b'7', 0x00,
+    ]),
+  )
+  assert_eq(@tftp.encode(oack).length(), 45)
+  assert_eq(@tftp.decode(@tftp.encode(oack)), Ok(oack))
 }
 
 // ---------------------------------------------------------------------------
