@@ -37,13 +37,37 @@ test "parse_int accepts decimal and rejects the rest" {
 }
 
 ///|
-test "get takes a remote and defaults the local name to it" {
+test "get takes a remote and defaults the local name to its base name" {
   match parsed("get", ["127.0.0.1:69", "boot.img"]) {
     Some(Get(args)) => {
       assert_eq(args.remote, "127.0.0.1:69")
       assert_eq(args.remote_file, "boot.img")
       assert_eq(args.local_file, "boot.img")
     }
+    _ => fail("expected a get command")
+  }
+}
+
+///|
+/// `get` and `put` have to answer "what is this file called when only one side
+/// is given?" the same way: the base name. Anything else makes one direction
+/// write into a directory the caller never asked for.
+test "get drops the remote's directory, the same way put drops the local one" {
+  match parsed("get", ["h:69", "sub/a.txt"]) {
+    Some(Get(args)) => {
+      assert_eq(args.remote_file, "sub/a.txt")
+      assert_eq(args.local_file, "a.txt")
+    }
+    _ => fail("expected a get command")
+  }
+  match parsed("get", ["h:69", "deep/dir/x.bin"]) {
+    Some(Get(args)) => assert_eq(args.local_file, "x.bin")
+    _ => fail("expected a get command")
+  }
+  // An explicit local path is taken as typed, directory and all: the caller
+  // naming the destination is the caller's decision.
+  match parsed("get", ["h:69", "sub/a.txt", "./out/a.txt"]) {
+    Some(Get(args)) => assert_eq(args.local_file, "./out/a.txt")
     _ => fail("expected a get command")
   }
 }
@@ -196,6 +220,19 @@ test "base_name keeps the last path segment" {
   assert_eq(base_name("boot.img"), "boot.img")
   assert_eq(base_name("./dir/boot.img"), "boot.img")
   assert_eq(base_name("a/b/c.bin"), "c.bin")
+  assert_eq(base_name(""), "")
+}
+
+///|
+/// The directory a local write has to make room in. Empty answers mean "the
+/// current directory", which needs nothing created.
+test "parent_dir names the directory a local name lives in" {
+  assert_eq(parent_dir("a.txt"), None)
+  assert_eq(parent_dir("out/a.txt"), Some("out/"))
+  assert_eq(parent_dir("./x/y/f"), Some("./x/y/"))
+  assert_eq(parent_dir("/tmp/f"), Some("/tmp/"))
+  // A leading separator is the root, not an empty parent.
+  assert_eq(parent_dir("/f"), Some("/"))
 }
 
 ///|

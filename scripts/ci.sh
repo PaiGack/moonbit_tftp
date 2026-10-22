@@ -130,6 +130,15 @@ check() {
   fi
 }
 
+# Runs `$2...` with `$1` as the working directory, inside this shell rather
+# than a subshell: `expect_success` inspects the exit code of the command it is
+# given, and `bash -c` would need the CLI's absolute path quoted through.
+run_cd() {
+  local directory="$1"
+  shift
+  ( cd "$directory" && "$@" )
+}
+
 expect_success() {
   local name="$1"
   shift
@@ -189,7 +198,9 @@ wait_for_size() {
 # Fixtures
 # ---------------------------------------------------------------------------
 step "fixtures"
+mkdir -p "$ROOT_DIR/sub"
 printf 'hello moon-tftp\n' > "$ROOT_DIR/hello.txt"
+printf 'nested\n' > "$ROOT_DIR/sub/a.txt"
 head -c 4096 /dev/urandom > "$ROOT_DIR/blob.bin"
 head -c 5000 /dev/urandom > "$WORK/upload.bin"
 printf 'line one\nline two\n' > "$WORK/na.txt"
@@ -225,6 +236,25 @@ expect_success "get with --blksize 1024" \
   "$CLI" get "$REMOTE" blob.bin "$WORK/blob1024.out" --blksize 1024
 check "the negotiated download matches byte for byte" \
   cmp "$ROOT_DIR/blob.bin" "$WORK/blob1024.out"
+
+# A remote name with a directory in it. The local name defaults to the base
+# name, so this lands as `a.txt` in the current directory — not as `sub/a.txt`,
+# which is a directory the caller never made. That mismatch (a full download
+# discarded over a missing `sub/`) is what this case is here to keep fixed.
+NESTED_DIR="$WORK/nested"
+mkdir -p "$NESTED_DIR"
+expect_success "get a nested remote name defaults to its base name" \
+  run_cd "$NESTED_DIR" "$ROOT/$CLI" get "$REMOTE" sub/a.txt
+check "the nested download landed as the base name" \
+  cmp "$ROOT_DIR/sub/a.txt" "$NESTED_DIR/a.txt"
+
+# An explicit local path with a directory that does not exist yet is created
+# rather than refused: the bytes already crossed the wire, so a missing parent
+# is a local detail, not a reason to lose the file.
+expect_success "get into a local directory that does not exist yet" \
+  "$CLI" get "$REMOTE" sub/a.txt "$NESTED_DIR/fresh/deep/a.txt"
+check "the file written into a created directory matches" \
+  cmp "$ROOT_DIR/sub/a.txt" "$NESTED_DIR/fresh/deep/a.txt"
 
 expect_failure "get a file the server does not have" \
   "$CLI" get "$REMOTE" nope.txt "$WORK/nope.out"
