@@ -123,6 +123,11 @@ fn mode_of(name : String) -> Mode? {
 /// Error codes carried by ERROR packets (RFC 1350, section 5).
 ///
 /// The variant name mirrors the code, so `Undefined` is code 0 ("not defined").
+///
+/// `NoSuchUser` exists in the RFC but this package never sends it: TFTP has no
+/// notion of a user, the code table was inherited from FTP wholesale. Like
+/// `Mode::Mail` it is decode-side only, so it can only ever appear as a
+/// round-trip value, never on the wire from this package.
 pub(all) enum ErrorCode {
   Undefined // 0
   FileNotFound // 1
