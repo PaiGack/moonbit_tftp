@@ -608,6 +608,11 @@ pub async fn[T : Transport] serve_read(
   let blocks = split_blocks(wire_payload(accepted.mode(), payload), block_size)
   let mut index = 0
   let mut retries = 0
+  // The block on the wire the session is waiting on. It is a u16 like the wire
+  // itself, and both edges of the wrap are named — `+ 1` for the next block,
+  // `previous_block` for the one just sent — instead of `index + 1` being
+  // trusted to fit: past 65535 it does not.
+  let mut expected : UInt16 = 1
   let mut packet = match accepted.first_packet() {
     Some(packet) => packet
     None => Data(1, blocks[0])
@@ -640,11 +645,12 @@ pub async fn[T : Transport] serve_read(
               }
               is_oack = false
               index = 0
+              expected = 1
               packet = Data(1, blocks[0])
               retries = 0
               continue
             }
-            let sent = (index + 1).to_uint16()
+            let sent = expected
             if acked == sent {
               retries = 0
               if blocks[index].length() < block_size {
@@ -659,8 +665,9 @@ pub async fn[T : Transport] serve_read(
                 return Ok(total)
               }
               index = index + 1
-              packet = Data((index + 1).to_uint16(), blocks[index])
-            } else if acked == index.to_uint16() {
+              expected = next_block(expected)
+              packet = Data(expected, blocks[index])
+            } else if acked == previous_block(sent) {
               // Our DATA n+1 went missing: the peer re-acknowledged n, so send
               // n+1 again instead of waiting out the timeout.
               retries = 0
@@ -736,7 +743,10 @@ pub async fn[T : Transport] serve_write(
               }
               netascii = state
               out = out + stored
-              expected = expected + 1
+              // `+ 1` on the circle, not on the u16: after 65535 comes 0, and a
+              // session that ran past the wrap would stop recognising the
+              // block it just took.
+              expected = next_block(block)
               packet = Ack(block)
               if chunk.length() < block_size {
                 // The peer sent a short block: that was the file. Its ACK is
@@ -751,13 +761,17 @@ pub async fn[T : Transport] serve_write(
               }
             } else if block_before(block, expected) {
               // A duplicate we already have: answer it again, keep the bytes
-              // we hold (Sorcerer's Apprentice, RFC 1350 section 4).
+              // we hold (Sorcerer's Apprentice, RFC 1350 section 4). At the
+              // seam this is the branch that catches the repeat of 65535 while
+              // 0 is expected: the circle puts it one step behind.
               packet = Ack(block)
               retries = 0
             } else {
               // Ahead of what we can accept: an ACK for a block we never took
-              // is the honest answer, and the peer will retransmit.
-              packet = Ack(expected - 1)
+              // is the honest answer, and the peer will retransmit. `- 1` on
+              // the circle: after 65535 the block before the expected one is
+              // 0, which a bare subtraction gets wrong the other way round.
+              packet = Ack(previous_block(expected))
               retries = retries + 1
             }
           Ok(_) => retries = retries + 1

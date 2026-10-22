@@ -2289,3 +2289,71 @@ async test "a netascii put through the real server stores the local form" {
     assert_eq(files.get("/srv/config.txt"), Some(stored))
   })
 }
+
+///|
+/// Reads one DATA off the wire and answers it with `ack`, so a test can put an
+/// ACK that a well-behaved peer would never send on the sender's path.
+async fn data_then_ack(
+  server : @tftp.MemoryTransport,
+  ack : UInt16,
+) -> @tftp.Packet? {
+  let seen : Ref[@tftp.Packet?] = Ref(None)
+  match server.recv("client:0", 4000) {
+    @tftp.Recv::Packet(datagram) =>
+      match @tftp.decode(datagram.payload()) {
+        Ok(packet) => seen.val = Some(packet)
+        Err(_) => ()
+      }
+    @tftp.Recv::Timeout => ()
+  }
+  server.send(@tftp.encode(@tftp.Packet::Ack(ack)), "client:0")
+  seen.val
+}
+
+///|
+/// `put` past the u16 wrap: the block number the client puts on the wire goes
+/// 65535 -> 0, and a late ACK 65535 arriving while block 0 is in flight must
+/// not be taken as "the peer moved on".
+///
+/// The wire is cut after the handshake so the last block is the only one that
+/// carries a wrapped number: a real 32 MiB upload is not needed to reach the
+/// seam, only the block number is.
+async test "put sends block 0 after block 65535 and survives a late ACK" {
+  let (client, server) = @tftp.MemoryTransport::pair("client:0", "server:69")
+  // `max_retries = 0` is the point of the test: the late ACK costs the one
+  // resend, and a client that read it as progress would send block 1 instead
+  // and be caught by the next assertion rather than by a green test.
+  let payload = b"over the edge"
+  @async.with_task_group(group => {
+    group.spawn_bg(() => {
+      ignore(server.recv("client:0", 2000))
+      server.send(@tftp.encode(@tftp.Packet::Ack(0)), "client:0")
+      // The late ACK for the block the client is about to replace with 0.
+      match data_then_ack(server, 65535) {
+        Some(@tftp.Packet::Data(block, _)) => assert_eq(block, 1)
+        _ => fail("expected DATA 1")
+      }
+      // Block 0 is acknowledged again, this time for real: the block the peer
+      // still holds is 65535, so its ACK is the one a naive comparison calls
+      // "newer" and accepts as if block 0 had been delivered.
+      match data_then_ack(server, 0) {
+        Some(@tftp.Packet::Data(block, _)) => assert_eq(block, 1)
+        _ => fail("expected DATA 1 to be resent")
+      }
+    })
+    let result = @tftp.put(
+      client,
+      "server:69",
+      "wrap.bin",
+      payload,
+      @tftp.ClientOptions::default().with_max_retries(1),
+    )
+    match result {
+      Ok(outcome) => assert_eq(outcome.sent(), Some(payload.length()))
+      // The retry budget runs out after the two bogus ACKs: what matters is
+      // that the client kept waiting for block 1's ACK instead of moving on.
+      Err(@tftp.ClientError::Timeout) => ()
+      Err(_) => fail("expected a timeout, got some other failure")
+    }
+  })
+}
