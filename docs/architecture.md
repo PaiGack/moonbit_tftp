@@ -11,7 +11,6 @@ PaiGack/tftp
 ├── transport.mbt            公开 API（UDP 收发抽象 Transport、Datagram、Recv）
 ├── transport_memory.mbt     公开 API（内存实现，离线测试用）
 ├── transport_socket.mbt     公开 API（客户端真实 UDP 套接字实现）
-├── transport_socket_wbtest.mbt  白盒测试（真实 UDP 套接字实现）
 ├── client.mbt               公开 API（get / put 停等状态机）
 ├── server.mbt               公开 API（请求处理 / 会话状态机 / TID 分发 / 路径约束）
 ├── server_fs.mbt            公开 API（真实文件系统后端 HostFileSystem +
@@ -30,12 +29,17 @@ PaiGack/tftp
 ├── client_wbtest.mbt        白盒测试（客户端内部状态机）
 ├── server_wbtest.mbt        白盒测试（服务端内部状态机）
 ├── server_fs_wbtest.mbt     白盒测试（真实文件系统 + socket 会话）
-├── transport_socket_wbtest.mbt  白盒测试（真实 UDP 套接字客户端传输）
+├── transport_socket_wbtest.mbt  白盒测试（真实 UDP 套接字实现，客户端与服务端两侧）
 ├── cmd/main/                CLI 可执行入口
+│   ├── moon.pkg            包声明（pkgtype(kind: "executable")，别名根包为 @lib）
 │   ├── main.mbt            get / put / serve 子命令实现
 │   └── main_wbtest.mbt     白盒测试（CLI 子命令 / 参数解析）
-└── docs/                    设计文档
+├── docs/                    设计文档
+└── scripts/ci.sh            唯一 CI 入口（CNB 与 GitHub Actions 共用）
 ```
+
+`.mbti` 接口文件（根包 `pkg.generated.mbti`、`cmd/main/pkg.generated.mbti`）
+由 `moon info` 生成，属于构建产物，不在上面的树里逐个列出。
 
 MoonBit 以目录为包，`moon.pkg` 声明该包依赖；测试按 `_test.mbt`（黑盒）
 与 `_wbtest.mbt`（白盒）分文件。
@@ -102,6 +106,7 @@ UDP 收发基于 `moonbitlang/async` 的 `socket` 包，不自行编写底层绑
 | 选项协商 | 覆盖接受 / 拒绝 / 缺省回退 / ERROR 8 后去 options 重发 / 非法取值 / 未知选项名 |
 | netascii | 边界字符（`\n`、`\r`、行尾跨块），双向 |
 | 状态机 | 注入时序事件，断言状态转移与输出报文 |
+| 内存后端 | `server_memory.mbt` / `transport_memory.mbt` 是测试注入用的实现（FileSystem / Transport），不是产品路径；进程内跑，无 socket、无磁盘，`server_test.mbt` / `client_test.mbt` 的端到端与会话用例都建在它们上面 |
 | 端到端 | 内存传输后端上跑 client ↔ server 全流程，netascii 走往返
 （客户端解码 + 服务端编码 / 解码，两边都对才叫通） |
 | 客户端 | 内存传输上跑完整 get / put，覆盖重传、去重、回绕、netascii 跨块 |
