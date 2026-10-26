@@ -849,6 +849,12 @@ async fn[T : Transport] send_block_with_retry(
                 } else if block_before(acked, block) {
                   // A delayed ACK for an earlier block: wait for ours.
                   retries = retries + 1
+                } else if block_after(acked, block) {
+                  // Only reachable when the ACK is old across the u16 wrap, so
+                  // the half-circle rule is what tells it from the future.
+                  // Before the wrap this branch is dead: an old ACK is
+                  // `block_before`, a newer one is nothing this sender can use.
+                  retries = retries + 1
                 } else {
                   retries = retries + 1
                 }

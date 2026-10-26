@@ -25,6 +25,16 @@ pub fn next_block(block : UInt16) -> UInt16 {
 }
 
 ///|
+/// The block number before `block`, with the u16 wrap-around.
+///
+/// The mirror of `next_block`: before 0 comes 65535. A session that keeps its
+/// expected block at full width needs this to name the block it just sent, and
+/// a bare `block - 1` underflows at 0.
+pub fn previous_block(block : UInt16) -> UInt16 {
+  block - 1
+}
+
+///|
 /// Whether `value` is strictly older than `reference`, on the u16 circle.
 ///
 /// `value` is older when stepping forward from `value` reaches `reference`
@@ -38,7 +48,16 @@ pub fn block_before(value : UInt16, reference : UInt16) -> Bool {
 }
 
 ///|
-/// Whether `value` is strictly newer than `reference`, on the u16 circle.
+/// Whether `value` comes after `reference` on the half circle that starts at
+/// `reference`.
+///
+/// `reference` itself and the block half a circle ahead are both `false`: the
+/// comparison has no order to report across 32768 steps. Every block between
+/// them, the one that follows `reference` included, is `true`. This is the
+/// `block_before` comparison read the other way round: the mirror over the
+/// whole half circle, not only the one step `block_follows` takes. The two
+/// differ exactly at the wrap, which is the point — after 65535 comes 0, so 0
+/// is `block_after` 65535, while 32768 ahead of it is neither.
 pub fn block_after(value : UInt16, reference : UInt16) -> Bool {
   block_before(reference, value)
 }

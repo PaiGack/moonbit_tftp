@@ -67,6 +67,8 @@ pub fn peer_error(ErrorCode, String) -> ServerError
 
 pub async fn[T : FileSystem] plan_request(ServerOptions, T, Packet) -> Result[RequestAction, ServerError]
 
+pub fn previous_block(UInt16) -> UInt16
+
 pub async fn[T : Transport] put(T, String, String, Bytes, ClientOptions) -> Result[TransferOutcome, ClientError]
 
 pub async fn[T : Transport] put_with_progress(T, String, String, Bytes, ClientOptions, (Progress) -> Unit) -> Result[TransferOutcome, ClientError]

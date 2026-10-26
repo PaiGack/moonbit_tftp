@@ -2669,3 +2669,216 @@ async test "a session without options reports the RFC defaults" {
   assert_eq(@tftp.Options::default().tsize(), None)
   ignore(session)
 }
+
+///|
+/// Pulls one packet off the client end of a session link, failing the test if
+/// nothing arrives.
+async fn expect_packet(
+  client : @tftp.MemoryTransport,
+  peer : String,
+  what : String,
+) -> @tftp.Packet {
+  match client.recv(peer, 4000) {
+    @tftp.Recv::Packet(datagram) =>
+      match @tftp.decode(datagram.payload()) {
+        Ok(packet) => packet
+        Err(_) => fail("expected \{what}, got an undecodable datagram")
+      }
+    @tftp.Recv::Timeout => fail("expected \{what}, got nothing")
+  }
+}
+
+///|
+/// `serve_read` across the u16 wrap: the session is on block 1, and the ACK
+/// that comes back is 65535 — the block the circle puts just before 0.
+///
+/// The ACK for the block just sent is `n - 1` on the circle, and at the seam
+/// that is 65535 for `n = 0`. A bare `acked + 1 == expected` cannot spell it:
+/// the read would treat the ACK as a number from the future and wait out the
+/// retry budget instead of resending.
+async test "serve_read treats the ACK 65535 as the block before 0" {
+  let files = @tftp.MemoryFileSystem::new()
+  files.put("/srv/seam.bin", b"hello")
+  let (client, _, session) = session_triple(
+    files,
+    @tftp.ServerOptions::default().with_root("/srv").with_max_retries(3),
+  )
+  @async.with_task_group(group => {
+    let task = group.spawn(() => {
+      session.serve(@tftp.Packet::Rrq("seam.bin", @tftp.Octet, []))
+    })
+    match expect_packet(client, "127.0.0.1:7000", "DATA 1") {
+      @tftp.Packet::Data(block, chunk) => {
+        assert_eq(block, 1)
+        assert_eq(chunk.length(), 5)
+      }
+      _ => fail("expected DATA 1")
+    }
+    // One step before block 0, which is one step before block 1: stale, not
+    // from the future, and the same answer as a timeout.
+    client.send(@tftp.encode(@tftp.Packet::Ack(65535)), "127.0.0.1:7000")
+    match expect_packet(client, "127.0.0.1:7000", "a resent DATA 1") {
+      @tftp.Packet::Data(block, _) => assert_eq(block, 1)
+      _ => fail("ACK 65535 must not move the session past DATA 1")
+    }
+    client.send(@tftp.encode(@tftp.Packet::Ack(1)), "127.0.0.1:7000")
+    match task.wait() {
+      @tftp.Read(bytes) => assert_eq(bytes, 5)
+      other => fail("expected a completed read, got \{outcome_repr(other)}")
+    }
+  })
+}
+
+///|
+/// The same seam behind an option handshake: the OACK is acknowledged, DATA 1
+/// goes out, and the ACK that comes back is 65535.
+async test "serve_read resends after an ACK for the block before the first" {
+  let files = @tftp.MemoryFileSystem::new()
+  files.put("/srv/seam.bin", Bytes::from_array(FixedArray::make(600, b'w')))
+  let (client, _, session) = session_triple(
+    files,
+    @tftp.ServerOptions::default().with_root("/srv").with_max_retries(3),
+  )
+  @async.with_task_group(group => {
+    let task = group.spawn(() => {
+      session.serve(
+        @tftp.Packet::Rrq("seam.bin", @tftp.Octet, [
+          @tftp.TftpOption::new("blksize", "512"),
+        ]),
+      )
+    })
+    match expect_packet(client, "127.0.0.1:7000", "the OACK") {
+      @tftp.Packet::Oack(_) => ()
+      _ => fail("expected the OACK")
+    }
+    client.send(@tftp.encode(@tftp.Packet::Ack(0)), "127.0.0.1:7000")
+    match expect_packet(client, "127.0.0.1:7000", "DATA 1") {
+      @tftp.Packet::Data(block, chunk) => {
+        assert_eq(block, 1)
+        assert_eq(chunk.length(), 512)
+      }
+      _ => fail("expected DATA 1")
+    }
+    client.send(@tftp.encode(@tftp.Packet::Ack(65535)), "127.0.0.1:7000")
+    match expect_packet(client, "127.0.0.1:7000", "a resent DATA 1") {
+      @tftp.Packet::Data(block, _) => assert_eq(block, 1)
+      _ => fail("ACK 65535 must resend DATA 1")
+    }
+    client.send(@tftp.encode(@tftp.Packet::Ack(1)), "127.0.0.1:7000")
+    match expect_packet(client, "127.0.0.1:7000", "DATA 2") {
+      @tftp.Packet::Data(block, chunk) => {
+        assert_eq(block, 2)
+        assert_eq(chunk.length(), 88)
+      }
+      _ => fail("expected DATA 2")
+    }
+    client.send(@tftp.encode(@tftp.Packet::Ack(2)), "127.0.0.1:7000")
+    match task.wait() {
+      @tftp.Read(bytes) => assert_eq(bytes, 600)
+      other => fail("expected a completed read, got \{outcome_repr(other)}")
+    }
+  })
+}
+
+///|
+/// `serve_write` at the wrap: what arrives is 65535 and the block the session
+/// wants is 0.
+///
+/// On the circle 65535 is one step before 0, so this is the block the peer
+/// already sent — a repeat whose ACK was lost — and the answer is the same ACK
+/// again. A plain `65535 < 0` says the opposite, and the read would treat the
+/// repeat as a block from the future, never re-acknowledge it, and leave the
+/// peer retransmitting until its own budget ran out.
+///
+/// The counter is walked with real packets: 65535 is one step from 0, so the
+/// seam is reachable with a short file rather than 32 MiB of them.
+async test "serve_write re-acknowledges a repeat one step before the wrap" {
+  let files = @tftp.MemoryFileSystem::new()
+  let block = Bytes::from_array(FixedArray::make(8, b'y'))
+  let (client, _, session) = session_triple(
+    files,
+    @tftp.ServerOptions::default().with_root("/srv").with_max_retries(3),
+  )
+  @async.with_task_group(group => {
+    let task = group.spawn(() => {
+      session.serve(
+        @tftp.Packet::Wrq("wrap.bin", @tftp.Octet, [
+          @tftp.TftpOption::new("blksize", "8"),
+          @tftp.TftpOption::new("tsize", "16"),
+        ]),
+      )
+    })
+    match expect_packet(client, "127.0.0.1:7000", "the OACK") {
+      @tftp.Packet::Oack(_) => ()
+      _ => fail("expected the OACK")
+    }
+    // Block 1, then the same block again: what a lost ACK looks like.
+    client.send(@tftp.encode(@tftp.Packet::Data(1, block)), "127.0.0.1:7000")
+    match expect_packet(client, "127.0.0.1:7000", "ACK 1") {
+      @tftp.Packet::Ack(acked) => assert_eq(acked, 1)
+      _ => fail("expected ACK 1")
+    }
+    client.send(@tftp.encode(@tftp.Packet::Data(1, block)), "127.0.0.1:7000")
+    match expect_packet(client, "127.0.0.1:7000", "a repeated ACK 1") {
+      @tftp.Packet::Ack(acked) => assert_eq(acked, 1)
+      _ => fail("a repeated DATA must be re-acknowledged as the same block")
+    }
+    // Now the seam: 65535 is the block the circle puts just before 2 could ever
+    // be reached from here, so it is a repeat of a block the session does not
+    // hold and the last accepted block is the answer.
+    client.send(
+      @tftp.encode(@tftp.Packet::Data(65535, block)),
+      "127.0.0.1:7000",
+    )
+    match expect_packet(client, "127.0.0.1:7000", "ACK 65535") {
+      @tftp.Packet::Ack(acked) => assert_eq(acked, 65535)
+      _ => fail("a DATA 65535 must be re-acknowledged as 65535")
+    }
+    client.send(@tftp.encode(@tftp.Packet::Data(2, block)), "127.0.0.1:7000")
+    match expect_packet(client, "127.0.0.1:7000", "ACK 2") {
+      @tftp.Packet::Ack(acked) => assert_eq(acked, 2)
+      _ => fail("expected ACK 2")
+    }
+    // Block 3 is the short one that closes the file: 8 + 8 + nothing.
+    client.send(@tftp.encode(@tftp.Packet::Data(3, b"")), "127.0.0.1:7000")
+    match expect_packet(client, "127.0.0.1:7000", "ACK 3") {
+      @tftp.Packet::Ack(acked) => assert_eq(acked, 3)
+      _ => fail("expected ACK 3")
+    }
+    match task.wait() {
+      @tftp.Written(bytes) => assert_eq(bytes, 16)
+      other => fail("expected a completed write, got \{outcome_repr(other)}")
+    }
+  })
+  // Two blocks of 8: the repeat and the wrapped number stored nothing.
+  assert_eq(files.get("/srv/wrap.bin"), Some(block + block))
+}
+
+///|
+/// The two comparisons `serve_write` and `serve_read` take at the seam, as the
+/// session's own counter values.
+///
+/// A server that wanted to see "0 expected, 65535 arrived" on the wire would
+/// have to send 65534 real blocks first; the comparison is what the wrap breaks,
+/// so it is the comparison that is pinned here. The live sessions either side of
+/// it are covered by the tests above: a short file never reaches the seam, and
+/// the arithmetic above is what decides the seam's outcome.
+test "the session counter reads the wrap the way the loops need it" {
+  // `serve_read` waits on `n` and re-sends it when the peer re-acknowledges the
+  // block before: at the seam that ACK is 65535 for `n = 0`.
+  assert_eq(@tftp.previous_block(0), 65535)
+  assert_true(@tftp.block_before(65535, 0))
+  // ... and it is not the block before 1, so a session on 1 does not resend.
+  assert_true(@tftp.block_before(65535, 1))
+  // `serve_write` answers a block it cannot accept with the last one it took:
+  // before 0 that is 65535, not -1.
+  assert_eq(@tftp.previous_block(1), 0)
+  assert_eq(@tftp.next_block(65535), 0)
+  // The one-step relation both loops walk forward through.
+  assert_true(@tftp.block_follows(0, 65535))
+  assert_false(@tftp.block_follows(65535, 0))
+  // A block from the future, which is what a naive `<` turns the repeat into:
+  // 65535 is inside the half circle of 0 and outside the one of 1.
+  assert_true(@tftp.block_after(0, 65535))
+  assert_false(@tftp.block_after(65535, 0))
+}
