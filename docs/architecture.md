@@ -34,9 +34,19 @@ PaiGack/tftp
 │   ├── moon.pkg            包声明（pkgtype(kind: "executable")，别名根包为 @lib）
 │   ├── main.mbt            get / put / serve 子命令实现
 │   └── main_wbtest.mbt     白盒测试（CLI 子命令 / 参数解析）
+├── shadow/                  版本号来源（moon_shadow 虚拟包的实现）
+│   ├── moon.pkg             包声明（virtual(implement: ...)，无构建期规则）
+│   └── generated.mbt        从 moon.mod 刷新的模块元数据，已入库
 ├── docs/                    设计文档
-└── scripts/ci.sh            唯一 CI 入口（CNB 与 GitHub Actions 共用）
+├── scripts/ci.sh            唯一 CI 入口（CNB 与 GitHub Actions 共用）
+└── scripts/shadow.sh        刷新 shadow/generated.mbt（改 moon.mod 后手跑）
 ```
+
+`shadow/generated.mbt` 是**入库文件**，不是构建产物：`moon publish` 会在一
+个没有 `.git` 的临时目录里重新校验打包的 zip，而生成器要靠 `.git` 才能回答，
+在那里不会返回。同时打包只收被跟踪的文件，构建期写出的产物本来也进不了
+zip。因此改完 `moon.mod` 要手跑 `bash scripts/shadow.sh` 再提交；
+`cmd/main/main_wbtest.mbt` 有测试盯着两者是否一致。
 
 `.mbti` 接口文件（根包 `pkg.generated.mbti`、`cmd/main/pkg.generated.mbti`）
 由 `moon info` 生成，属于构建产物，不在上面的树里逐个列出。
