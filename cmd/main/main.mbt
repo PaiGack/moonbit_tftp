@@ -7,8 +7,10 @@
 /// growing a second, divergent implementation of the state machines.
 
 ///|
-/// The version reported by `--version`; kept in step with `moon.mod`.
-let version : String = "0.1.1"
+/// The version reported by `--version`, read from this module's own `moon.mod`
+/// at build time. There is no second copy here to keep in step with: the value
+/// is generated from the one `moon.mod` by the `gen` rule in `shadow/`.
+let version : String = @moon_shadow.current().version
 
 ///|
 /// A failed command line, carrying the sentence to print for the user.

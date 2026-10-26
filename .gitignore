@@ -5,3 +5,12 @@ target
 .mooncakes/
 .moonagent/
 .githooks/
+
+# `shadow/generated.mbt` is written by the `gen` rule at build time and is
+# never committed: half of it comes from `moon.mod`, the other half is the git
+# checkout the build ran in — commit, author, dirty flag. Baking a checkout
+# into a tracked file means every build in a different checkout (CI's own, for
+# one) produces a diff, which is exactly what `git diff --exit-code` in
+# scripts/ci.sh is there to catch. Generated, not tracked: the build writes it
+# before anything imports it, so nothing needs it in the tree.
+shadow/generated.mbt

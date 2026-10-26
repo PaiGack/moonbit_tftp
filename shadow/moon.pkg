@@ -1,0 +1,20 @@
+import {
+  "PaiGack/moon_shadow/mooninfo",
+  "PaiGack/moon_shadow/gitinfo",
+  "PaiGack/moon_shadow/buildinfo",
+}
+
+virtual(implement: "PaiGack/moon_shadow/shadow")
+
+// `gen` reads this module's `moon.mod` and writes `generated.mbt`, so the
+// version `--version` prints has exactly one source. It runs from the
+// `.mooncakes` copy of the generator, which is why no checkout of moon_shadow
+// is needed next to this module. `--target native`: the generator shells out to
+// git through libc, and the only host guaranteed here is the one running the
+// build.
+rule(
+  name: "gen",
+  command: "moon run --target native --target-dir _build/gen .mooncakes/PaiGack/moon_shadow/gen -- \"$input\" \"$output\"",
+)
+
+dev_build(rule: "gen", input: "../moon.mod", output: "generated.mbt")
