@@ -1,6 +1,7 @@
 import {
   "PaiGack/moon_shadow/mooninfo",
   "PaiGack/moon_shadow/gitinfo",
+  "PaiGack/moon_shadow/buildinfo",
 }
 
 virtual(implement: "PaiGack/moon_shadow/shadow")
@@ -13,7 +14,7 @@ virtual(implement: "PaiGack/moon_shadow/shadow")
 // build.
 rule(
   name: "gen",
-  command: "moon run --target native --target-dir _build/gen .mooncakes/PaiGack/moon_shadow/gen/main.mbt -- --meta-path PaiGack/moon_shadow/mooninfo --git-path PaiGack/moon_shadow/gitinfo \"$input\" \"$output\"",
+  command: "moon run --target native --target-dir _build/gen .mooncakes/PaiGack/moon_shadow/gen -- \"$input\" \"$output\"",
 )
 
 dev_build(rule: "gen", input: "../moon.mod", output: "generated.mbt")

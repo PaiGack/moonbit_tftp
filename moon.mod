@@ -15,7 +15,7 @@ repository = "https://github.com/PaiGack/moonbit_tftp"
 license = "Apache-2.0"
 
 import {
-  "PaiGack/moon_shadow@0.2.0",
+  "PaiGack/moon_shadow@0.3.2",
   "moonbitlang/async@0.21.3",
 }
 

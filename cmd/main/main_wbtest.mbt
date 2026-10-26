@@ -374,4 +374,10 @@ test "the reported version comes from moon.mod, not a copy of it" {
   // An empty version would mean the generator never ran and the field fell
   // back to a default, which `--version` would print as `moon-tftp `.
   assert_false(version.is_empty())
+  // `build_info()` only compiles because the implementation imports
+  // `buildinfo`, which is the half of `shadow/generated.mbt` that 0.3.2 added:
+  // if the rule and the import ever drift apart again, this fails to build
+  // rather than reporting a version nobody generated.
+  let build = @moon_shadow.build()
+  assert_true(build.profile == "debug" || build.profile == "release")
 }
