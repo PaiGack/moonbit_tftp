@@ -56,7 +56,7 @@ pub fn git_info() -> @PaiGack/moon_shadow/gitinfo.GitInfo {
 /// them.
 pub fn build_info() -> @PaiGack/moon_shadow/buildinfo.BuildInfo {
   @PaiGack/moon_shadow/buildinfo.BuildInfo::from_toolchain({
-    moon_version: "0.1.20261020",
-    moonc_version: "v0.10.16+b1a0e846e",
+    moon_version: "0.1.20261023",
+    moonc_version: "v0.10.17+d971670cd",
   })
 }
