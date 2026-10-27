@@ -6,10 +6,15 @@ import {
 
 virtual(implement: "PaiGack/moon_shadow/shadow")
 
-// No `dev_build` rule here on purpose. `generated.mbt` is tracked, not
-// produced: `moon publish` re-checks the packaged zip in a scratch directory
-// with no `.git`, and the generator walks up from the module looking for one —
-// in that environment it does not answer, it spins, and the check never
-// returns. A rule that only works in a checkout is a rule that breaks the one
-// build that has no checkout at all. `scripts/shadow.sh` refreshes the file by
-// hand; `moon test` fails when it drifts from `moon.mod`.
+// `gen` reads this module's `moon.mod` and writes `generated.mbt`, so the
+// version `--version` prints has exactly one source. It runs from the
+// `.mooncakes` copy of the generator, which is why no checkout of moon_shadow
+// is needed next to this module. `--target native`: the generator shells out to
+// git through libc, and the only host guaranteed here is the one running the
+// build.
+rule(
+  name: "gen",
+  command: "moon run --target native --target-dir _build/gen .mooncakes/PaiGack/moon_shadow/gen -- \"$input\" \"$output\"",
+)
+
+dev_build(rule: "gen", input: "../moon.mod", output: "generated.mbt")

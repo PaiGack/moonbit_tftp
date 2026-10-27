@@ -400,43 +400,21 @@ test "a retry budget of zero is refused" {
 ///|
 test "the reported version comes from moon.mod, not a copy of it" {
   // `--version` used to print a literal that had already drifted a release
-  // behind `moon.mod` (0.1.1 against 0.1.2). The value now comes from the one
-  // `moon.mod`, through `shadow/generated.mbt`, so this test pins the shape
-  // rather than the number: a hand-written literal would pass any equality
-  // check against itself, but it would not survive the generator being what
-  // supplies it.
+  // behind `moon.mod` (0.1.1 against 0.1.2). The value is now generated from
+  // the one `moon.mod` by the `gen` rule in `shadow/`, so this test pins the
+  // shape rather than the number: a hand-written literal would pass any
+  // equality check against itself, but it would not survive the generator
+  // being what supplies it.
   let info = @moon_shadow.current()
   assert_eq(version, info.version)
   assert_eq(info.name, "PaiGack/tftp")
-  // An empty version would mean `scripts/shadow.sh` was never run after a
-  // `moon.mod` edit and the field fell back to a default, which `--version`
-  // would print as `moon-tftp `.
+  // An empty version would mean the generator never ran and the field fell
+  // back to a default, which `--version` would print as `moon-tftp `.
   assert_false(version.is_empty())
   // `build_info()` only compiles because the implementation imports
   // `buildinfo`, which is the half of `shadow/generated.mbt` that 0.3.2 added:
-  // if the file and the import ever drift apart again, this fails to build
+  // if the rule and the import ever drift apart again, this fails to build
   // rather than reporting a version nobody generated.
   let build = @moon_shadow.build()
   assert_true(build.profile == "debug" || build.profile == "release")
-}
-
-///|
-test "shadow/generated.mbt is committed, so a published zip can be checked" {
-  // `moon publish` re-checks the packaged zip in a scratch directory with no
-  // `.git`, and the `gen` rule that used to write `generated.mbt` does not
-  // answer there — it spins, and the check never returns (published as
-  // "Missing implementation for function module_info" once git was out of the
-  // picture). The packager ships tracked files only, so the file has to be in
-  // the tree: a build-time artifact is missing from the zip by construction.
-  //
-  // This reads the file through the module metadata rather than the build
-  // tree, which is the closest a test inside the module can get to "is it in
-  // the zip": `module_info()` compiles from `generated.mbt` and from nowhere
-  // else, so the implementation existing at all is the assertion. What is
-  // left to check is that it was not left stale.
-  let info = @moon_shadow.current()
-  assert_eq(info.version, version)
-  // The generated half that no build can fill in: a committed file cannot
-  // carry a checkout's git state, so it reports none.
-  assert_false(@moon_shadow.git().available)
 }
