@@ -14,3 +14,4 @@ target
 # scripts/ci.sh is there to catch. Generated, not tracked: the build writes it
 # before anything imports it, so nothing needs it in the tree.
 shadow/generated.mbt
+shadow/.gitignore
