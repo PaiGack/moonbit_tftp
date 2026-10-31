@@ -14,4 +14,14 @@ target
 # scripts/ci.sh is there to catch. Generated, not tracked: the build writes it
 # before anything imports it, so nothing needs it in the tree.
 shadow/generated.mbt
+
+
+# The zip `moon package`/`moon publish` builds is cut with these same rules, so
+# ignoring the generated file above also drops it from the release — and the
+# registry's own `moon check` on the packed `shadow` package then fails: the
+# package declares a virtual with nothing implementing it. 0.1.4 shipped the
+# file (it predates the ignore lines); this keeps it shipping. The order
+# matters: a later rule beats an earlier one, and `shadow/.gitignore` is
+# ignored separately below.
+!shadow/generated.mbt
 shadow/.gitignore
