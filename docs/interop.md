@@ -61,10 +61,12 @@ Protocols: dict file ftp ftps gopher gophers http https imap imaps ldap ldaps mq
 | 协商 blksize=512 | `curl -s --tftp-blksize 512 tftp://127.0.0.1:PORT/hello.txt -o out` | 0 | `cmp` identical |
 | netascii 模式 | `curl -s "tftp://127.0.0.1:PORT/hello.txt;mode=netascii" -o out` | 0 | 落盘 `68 65 6c 6c 6f ... 0d 0a`（`hello moon-tftp\r\n`），服务端编码生效 |
 | 上传（WRQ） | `curl -s -T /tmp/up.txt tftp://127.0.0.1:PORT/up.txt` | 0 | 服务端落盘 `cmp` identical（11 B） |
-| 读目录 | `curl -s tftp://127.0.0.1:PORT/dir -o /dev/null` | 69 | 服务端回 ERROR，日志 `requested path is a directory` |
-| 读不存在的文件 | `curl -s tftp://127.0.0.1:PORT/nope.txt -o /dev/null` | 68 | 服务端回 ERROR，日志 `read /tmp/tftproot/nope.txt` |
+| 读目录 | `curl -s tftp://127.0.0.1:PORT/dir -o /dev/null` | 69 | 服务端回 ERROR，日志 `127.0.0.1:PORT: requested path is a directory` |
+| 读不存在的文件 | `curl -s tftp://127.0.0.1:PORT/nope.txt -o /dev/null` | 68 | 服务端回 ERROR，日志 `127.0.0.1:PORT: read /tmp/tftproot/nope.txt` |
 
-服务端日志在同一轮里的原样片段（顺序即请求顺序，`sent N bytes` 里的 N 是线上字节数）：
+服务端日志在同一轮里的原样片段（顺序即请求顺序，`sent N bytes` 里的 N 是线上字节数）。
+注意每一行都带 `peer: ` 前缀——`cmd/main` 的 `println!("{peer}: sent {bytes} bytes")`
+就是这么拼的，下面摘录保留了这个前缀，好让「照抄一行去 grep」这种核对方式真的能对上：
 
 ```
 127.0.0.1:35612: sent 16 bytes
@@ -75,6 +77,8 @@ Protocols: dict file ftp ftps gopher gophers http https imap imaps ldap ldaps mq
 127.0.0.1:48313: received 11 bytes
 127.0.0.1:48370: requested path is a directory
 127.0.0.1:55841: read /tmp/tftproot/nope.txt
+
+（行首是客户端地址，每次连接都是新的临时端口；正文才是可核对的部分。）
 ```
 
 两处要注意对账口径：
@@ -83,7 +87,9 @@ Protocols: dict file ftp ftps gopher gophers http https imap imaps ldap ldaps mq
   16 字节，服务端把 LF 编码成 CRLF 发出去，多一个字节。这个 +1 才是「服务端真的
   编码了」的证据，只看 curl 落地内容可以说服人，看服务端日志才闭环。
 - 目录 / 缺文件这两条失败**不打印 `sent N bytes`**：会话走的是 `Failed` 分支，
-  错误消息以 `stderr` 输出。日志里有那一行、没有传输计数，就是失败会话的形态。
+  错误消息以 `stderr` 输出，所以日志里只有 `peer: <错误消息>` 一行、没有传输计数，
+  这就是失败会话的形态。要认出它是**同一次**请求，看行首的 peer 地址而不是
+  只看消息正文。
 
 curl 通过 OACK 协商路径与本项目的服务端完成握手，并在多块文件上完成
 停等传输，说明服务端的 OACK 生成、首包时序、短块结束判定与真实客户端兼容。
@@ -109,7 +115,7 @@ curl 通过 OACK 协商路径与本项目的服务端完成握手，并在多块
 | `put` 5000 / 100000 / 4096 字节文件 | ✅ 落盘逐字节一致 |
 | `get --blksize 1024` | ✅ 逐字节一致 |
 | `get --netascii` | ✅ 解码回本地行尾（往返都要过，单向会漏服务端那半边） |
-| 对端文件不存在 | ✅ 客户端退出码 1，打印 `peer error (1 file not found): read ...`，服务端日志同为 `read ...` |
+| 对端文件不存在 | ✅ 客户端退出码 1，打印 `peer error (1 file not found): read ...`，服务端日志为 `127.0.0.1:PORT: read ...` |
 
 ### 对拍暴露并修复的两个问题
 

@@ -447,15 +447,24 @@ fn check_capacity(
 priv struct ProgressPrinter {
   name : String
   mut last_percent : Int32
+  /// Whether the last line printed was the one that finished the transfer, so
+  /// the callback firing again on the same numbers cannot repeat it.
+  mut finished : Bool
 }
 
 ///|
 fn ProgressPrinter::new(name : String) -> ProgressPrinter {
-  { name, last_percent: -1, }
+  { name, last_percent: -1, finished: false, }
 }
 
 ///|
-/// Prints one line if this report crosses into a percentage not printed yet.
+/// Prints one line per whole percent, plus the one that finishes the transfer.
+///
+/// Two kinds of report deserve a line: crossing into a percent nobody has
+/// printed yet, and the block that lands exactly on `total`. The second is not
+/// decoration — a transfer can end without ever crossing into a new percent
+/// (the last block is small, and the percent it lands in was already printed),
+/// and then the output would stop at `98%` for a file that arrived whole.
 fn ProgressPrinter::report(
   self : ProgressPrinter,
   progress : @lib.Progress,
@@ -464,17 +473,23 @@ fn ProgressPrinter::report(
     return
   }
   let total = progress.total()
-  // A netascii `get` decodes as it goes, so `done` can edge past the wire
-  // `total`; the percent is clamped rather than allowed to print 103%.
+  // A netascii `get` decodes as it goes, so `done` can sit on either side of
+  // the wire `total`; the percent is clamped rather than allowed to print 103%.
   let percent = if progress.done() >= total {
     100
   } else {
     progress.done() * 100 / total
   }
-  if percent == self.last_percent {
+  // The finishing line is owed exactly once, even though `done` can reach
+  // `total` on a percent that was already printed.
+  let finishing = progress.done() >= total && !self.finished
+  if percent == self.last_percent && !finishing {
     return
   }
   self.last_percent = percent
+  if progress.done() >= total {
+    self.finished = true
+  }
   println("\{self.name}: \{percent}% (\{progress.done()}/\{total} bytes)")
 }
 
@@ -679,6 +694,11 @@ async fn write_local(path : String, payload : Bytes) -> Unit raise CliError {
 /// The message a failed client transfer prints.
 fn describe_client_error(error : @lib.ClientError) -> String {
   match error {
+    // The prefix is the whole point of the line: RFC 1350's message field is
+    // the *peer's* text, so `read /srv/tftpboot/nope.txt` in it is a path on
+    // the server. Printing that bare reads like a local failure and sends
+    // people looking in the wrong filesystem, so the code and the peer are
+    // both named before it.
     @lib.ClientError::PeerError(code, message) =>
       "peer error (\{error_code_text(code)}): \{message}"
     @lib.ClientError::Timeout => "timed out waiting for the peer"
