@@ -39,7 +39,17 @@ PaiGack/tftp
 ```
 
 `.mbti` 接口文件（根包 `pkg.generated.mbti`、`cmd/main/pkg.generated.mbti`）
-由 `moon info` 生成，属于构建产物，不在上面的树里逐个列出。
+由 `moon info` 生成，不在上面的树里逐个列出。
+
+生成物分成两类，别混为一谈：
+
+- **`.mbti` 是提交进仓库的。** `scripts/ci.sh` 先跑 `moon info`、再
+  `git diff --exit-code`，所以「改了公开签名却忘了更新 `.mbti`」会当场变红，
+  而不是等下游使用者撞上。根包的 `.mbti` 真的有内容；`cmd/main` 是
+  executable 包，公开名字一个也没有，那份文件只有表头。
+- **`shadow/generated.mbt` 不进仓库**（`.gitignore` 里有说明）：它由
+  `shadow/moon.pkg` 的 `gen` 规则在构建时从 `moon.mod` 生成，一半来自模块
+  元数据，另一半来自构建所在的那次 git checkout，提交它会让人人一份 diff。
 
 MoonBit 以目录为包，`moon.pkg` 声明该包依赖；测试按 `_test.mbt`（黑盒）
 与 `_wbtest.mbt`（白盒）分文件。

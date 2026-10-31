@@ -109,12 +109,15 @@ run git status
 run moon test --target native --deny-warn --enable-coverage
 run moon coverage report -f summary
 # The README's fenced blocks are compiled too — the one block marked
-# `moonbit check` is a doc test, but `moon test -p <pkg>` never runs it (a
-# package-wide run does not pick up the module README). Naming the file makes
-# it a target of its own, which is the only thing that keeps the snippet in
-# README.mbt.md from drifting away from the API it documents: it did drift —
-# a missing `await` and a package alias that exists only inside this repo —
-# and nothing failed until it was pasted into a real package by hand.
+# `moonbit check` is a doc test. Naming the file makes it a target of its own;
+# the step above (`moon test` with no path) compiles it as well, which is what
+# `moon coverage ...` and everything after that rely on, but a plain
+# package-wide run is the wrong thing to *point at* when what is under test is
+# a Markdown file. Keeping the named run is what makes the failure message say
+# `./README.mbt.md` instead of a package, and it is what keeps the snippet from
+# drifting away from the API it documents: it did drift — a missing `await`
+# and a package alias that exists only inside this repo — and nothing failed
+# until it was pasted into a real package by hand.
 run moon test --target native --deny-warn ./README.mbt.md
 # The report above is a number, not a list: `analyze` names the lines nothing
 # runs yet. `uncovered.log` is written inside the build directory so the
